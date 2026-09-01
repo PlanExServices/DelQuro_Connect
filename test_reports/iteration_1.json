@@ -1,0 +1,48 @@
+{
+  "summary": "Full E2E testing of Delquro Connect backend (35 pytest cases across auth, huddle, timeoff, schedules, uploads, chat, kudos, achievements, admin/roles/locations, invites) and frontend (login, huddle, timeoff, schedule, chat, more page RBAC for admin vs staff). Backend 34/35 pass. Frontend flows fully working; RBAC gating correct.",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "POST /api/auth/login",
+        "issue": "Brute-force lockout is ineffective behind the ingress. The identifier is built as `f\"{request.client.host}:{email}\"`, but in this k8s environment request.client.host is the pod-level proxy IP which alternates between multiple values (observed 10.232.132.143 and 10.232.131.130 in db.login_attempts). Result: attempts get split across identifiers and the 5-fail threshold is never reached for a real attacker. 6 wrong logins in a row returned 401 every time (never 429). Fix: key the counter on the normalized email alone (or extract X-Forwarded-For first hop) and cap total fails per email.",
+        "priority": "HIGH"
+      }
+    ],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Sidebar nav data-testid naming",
+       "issues": ["AppLayout uses label.toLowerCase().replace(' ', '-') which yields 'nav-time-off', not the 'nav-timeoff' documented in the task/agent context. Same for tab-time-off. Not a functional bug, but the documented testid list is out of sync with the code. Suggest either updating docs or generating a canonical slug (e.g. replace(/\\s+/g,'') for 'timeoff')."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/backend_test.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "Fix brute-force lockout keying so that a single email/user across multiple proxy IPs is still locked out after 5 failed attempts (or use X-Forwarded-For / just the email).",
+    "Reconcile documented data-testid names ('nav-timeoff','tab-timeoff') with actual generated names ('nav-time-off','tab-time-off') — update either docs or AppLayout slug logic."
+  ],
+  "critical_code_review_comments": [
+    "server.py is 1035 lines — consider splitting into routers (auth, huddle, timeoff, chat, admin, files) as it grows.",
+    "CORSMiddleware is registered AFTER app.include_router(api). Starlette applies middleware to all routes regardless of order, but the more idiomatic (and safer with future middleware) pattern is to add middleware before including routers.",
+    "/api/files/{fid}: token is validated but there is no per-file ACL — any authenticated user can fetch any file id (uploaded schedules, chat images, avatars). Acceptable for MVP but worth noting.",
+    "Chat `access` field is stored but never enforced (only membership + is_everyone are checked). If 'staff/manager/admin' access tiers are intended, they are effectively dead config today.",
+    "PUT /api/team/{uid}/role and /api/team/{uid}/location take the role/location as query params rather than JSON body — works, but is non-idiomatic REST.",
+    "login_attempts entries are never TTL-expired; recommend a Mongo TTL index on locked_until or a periodic cleanup."
+  ],
+  "updated_files": [
+    "/app/backend/tests/backend_test.py (new)",
+    "/app/test_reports/iteration_1.json (new)"
+  ],
+  "success_rate": {"backend": "97% (34/35)", "frontend": "100% of tested flows"},
+  "test_credentials": "Admin planexservices@gmail.com / Delquro2026, Manager maria@hospital.com / Vetteam1, Staff sam@hospital.com / Vetteam1. Bootstrap code DELQURO-SETUP-2026 (already consumed).",
+  "seed_data_creation": "Tests create/delete their own posts, timeoff, schedules, chats, invites, locations (all prefixed TEST_ where possible). One TEST_ schedule + a couple of TEST_ chat messages remain in DB; safe.",
+  "retest_needed": true,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Backend fixture logs in with the three seeded accounts and stores post_id / timeoff_id / everyone_chat_id on pytest globals to chain assertions. Only failing test is TestAuth.test_brute_force_lockout — see rca. Frontend nav testids in code are 'nav-huddle','nav-time-off','nav-schedule','nav-chat','nav-more' (note the hyphen in time-off).",
+  "rca of the issue": "Brute-force lockout bug — login() computes `identifier = f'{request.client.host}:{email}'` and `check_lockout` reads counters keyed on that identifier. Inside the emergent k8s ingress, `request.client.host` is the reverse-proxy pod IP, and there are >=2 such pods that round-robin. So consecutive failed logins for the same email alternate between identifiers like `10.232.132.143:x@y.com` and `10.232.131.130:x@y.com`, each getting its own counter that never hits 5. Verified by querying db.login_attempts after 7 failed logins for a single email: two rows, counts 5 and 1. Mitigation: change identifier to `email.lower()` (simplest) or parse X-Forwarded-For for the true client IP, and add a TTL index on login_attempts.locked_until."
+}
