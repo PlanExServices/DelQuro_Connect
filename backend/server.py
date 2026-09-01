@@ -6,7 +6,7 @@ from pathlib import Path
 from datetime import datetime, timezone, timedelta, date as date_cls
 from typing import List, Optional
 
-from fastapi import FastAPI, APIRouter, HTTPException, Request, Depends, UploadFile, File, Form
+from fastapi import FastAPI, APIRouter, HTTPException, Request, Depends, UploadFile, File, Form, WebSocket, WebSocketDisconnect
 from fastapi.responses import Response
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
@@ -746,6 +746,28 @@ async def serve_file(fid: str, request: Request):
 
 
 # ================================================================ CHAT
+class ChatHub:
+    def __init__(self):
+        self.rooms: dict = {}
+
+    async def connect(self, cid: str, ws: WebSocket):
+        await ws.accept()
+        self.rooms.setdefault(cid, set()).add(ws)
+
+    def disconnect(self, cid: str, ws: WebSocket):
+        self.rooms.get(cid, set()).discard(ws)
+
+    async def broadcast(self, cid: str, payload: dict):
+        for ws in list(self.rooms.get(cid, set())):
+            try:
+                await ws.send_json(payload)
+            except Exception:
+                self.disconnect(cid, ws)
+
+
+hub = ChatHub()
+
+
 async def chat_snippet(c: dict) -> dict:
     last = await db.messages.find({"chat_id": str(c["_id"])}).sort("created_at", -1).limit(1).to_list(1)
     last_message, last_sender = None, None
@@ -834,7 +856,7 @@ async def send_message(cid: str, body: MessageBody, user: dict = Depends(get_cur
         "created_at": now_iso(),
     }
     res = await db.messages.insert_one(doc)
-    return {
+    out = {
         "id": str(res.inserted_id),
         "sender_id": doc["sender_id"],
         "sender_name": doc["sender_name"],
@@ -844,6 +866,30 @@ async def send_message(cid: str, body: MessageBody, user: dict = Depends(get_cur
         "read_by": doc["read_by"],
         "created_at": doc["created_at"],
     }
+    await hub.broadcast(cid, {"type": "message", "message": out})
+    return out
+
+
+@api.websocket("/ws/chat/{cid}")
+async def ws_chat(websocket: WebSocket, cid: str, token: str = ""):
+    try:
+        payload = decode_token(token)
+        user = await db.users.find_one({"_id": ObjectId(payload["sub"])})
+        chat = await db.chats.find_one({"_id": ObjectId(cid)})
+        if not user or not chat or not can_access_chat(chat, user):
+            await websocket.close(code=1008)
+            return
+    except Exception:
+        await websocket.close(code=1008)
+        return
+    await hub.connect(cid, websocket)
+    try:
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        hub.disconnect(cid, websocket)
+    except Exception:
+        hub.disconnect(cid, websocket)
 
 
 @api.post("/chats/{cid}/read")
@@ -886,6 +932,32 @@ async def achievements(user: dict = Depends(get_current_user)):
     } for u in users]
     board.sort(key=lambda x: x["kudos"], reverse=True)
     return board
+
+
+@api.get("/kudos/spotlight")
+async def kudos_spotlight(user: dict = Depends(get_current_user)):
+    since = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
+    pipeline = [
+        {"$match": {"created_at": {"$gte": since}}},
+        {"$group": {"_id": "$to_id", "count": {"$sum": 1},
+                    "name": {"$last": "$to_name"}, "initials": {"$last": "$to_initials"}}},
+        {"$sort": {"count": -1}},
+        {"$limit": 1},
+    ]
+    res = await db.kudos.aggregate(pipeline).to_list(1)
+    if not res:
+        return {"spotlight": None}
+    top = res[0]
+    job_title = None
+    try:
+        u = await db.users.find_one({"_id": ObjectId(top["_id"])})
+        job_title = u.get("job_title") if u else None
+    except Exception:
+        pass
+    return {"spotlight": {
+        "id": top["_id"], "name": top.get("name"), "initials": top.get("initials"),
+        "job_title": job_title, "count": top["count"],
+    }}
 
 
 @api.get("/kudos")

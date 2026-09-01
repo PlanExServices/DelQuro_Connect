@@ -43,3 +43,8 @@ export function fileUrl(id) {
   if (!id) return null;
   return `${API}/files/${id}?token=${getToken()}`;
 }
+
+export function wsUrl(path) {
+  const base = API.replace(/^http/, "ws");
+  return `${base}${path}?token=${getToken()}`;
+}

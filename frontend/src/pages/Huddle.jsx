@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from "react";
 import { toast } from "sonner";
-import { Plus, Heart, MessageCircle, Trash2, Camera, Image as ImageIcon, X, Gift, Award, MessageCircle as MC, Send } from "lucide-react";
+import { Plus, Heart, MessageCircle, Trash2, Camera, Image as ImageIcon, X, Gift, Award, MessageCircle as MC, Send, Zap } from "lucide-react";
 import { api, apiError, fileUrl } from "@/lib/api";
 import { relativeTime } from "@/lib/format";
 import { useAuth } from "@/context/AuthContext";
@@ -34,6 +34,7 @@ export default function Huddle() {
   const [err, setErr] = useState(null);
   const [bdays, setBdays] = useState([]);
   const [annis, setAnnis] = useState([]);
+  const [spotlight, setSpotlight] = useState(null);
   const [showNew, setShowNew] = useState(false);
   const [viewer, setViewer] = useState(null);
   const [commentsFor, setCommentsFor] = useState(null);
@@ -41,12 +42,13 @@ export default function Huddle() {
   const load = useCallback(async () => {
     setErr(null);
     try {
-      const [p, b, a] = await Promise.all([
+      const [p, b, a, s] = await Promise.all([
         api.get("/posts"),
         api.get("/team/birthdays"),
         api.get("/team/anniversaries"),
+        api.get("/kudos/spotlight"),
       ]);
-      setPosts(p.data); setBdays(b.data); setAnnis(a.data);
+      setPosts(p.data); setBdays(b.data); setAnnis(a.data); setSpotlight(s.data.spotlight);
     } catch (e) { setErr(apiError(e)); }
   }, []);
 
@@ -77,9 +79,25 @@ export default function Huddle() {
         )}
       />
 
+      {spotlight && (
+        <div className="rounded-3xl p-5 mb-4 flex items-center gap-4 animate-fade-up card-shadow" style={{ background: "var(--brand)" }} data-testid="kudos-spotlight">
+          <div className="grid place-items-center rounded-2xl shrink-0" style={{ width: 52, height: 52, background: "rgba(0,165,168,0.25)" }}>
+            <Zap size={24} color="var(--teal)" fill="var(--teal)" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <p className="text-xs uppercase tracking-[0.2em] mb-0.5" style={{ color: "var(--teal)" }}>Kudos spotlight · this week</p>
+            <p className="font-display text-xl text-white truncate">{spotlight.name}</p>
+            <p className="text-sm" style={{ color: "rgba(255,255,255,0.7)" }}>
+              {spotlight.job_title ? `${spotlight.job_title} · ` : ""}{spotlight.count} kudos this week
+            </p>
+          </div>
+          <Avatar initials={spotlight.initials} size={48} teal />
+        </div>
+      )}
+
+
       <div className="flex gap-4 mb-6">
-        <MiniCard icon={Gift} title="Birthdays" items={bdays} empty="None in the next 4 weeks"
-          render={(b, i) => (
+        <MiniCard icon={Gift} title="Birthdays" items={bdays} empty="None in the next 4 weeks"          render={(b, i) => (
             <div key={i} className="flex items-center gap-2.5">
               <Avatar initials={b.initials} size={30} />
               <span className="text-sm truncate" style={{ color: "var(--on-surface)" }}>{b.name}</span>

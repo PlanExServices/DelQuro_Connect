@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback, useRef } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import { ArrowLeft, Send, Camera, Image as ImageIcon, X } from "lucide-react";
-import { api, apiError, fileUrl } from "@/lib/api";
+import { api, apiError, fileUrl, wsUrl } from "@/lib/api";
 import { relativeTime } from "@/lib/format";
 import { useAuth } from "@/context/AuthContext";
 import { Avatar } from "@/components/Avatar";
@@ -41,9 +41,31 @@ export default function ChatThread() {
   useEffect(() => { loadChat(); }, [loadChat]);
   useEffect(() => {
     poll();
-    const t = setInterval(poll, 3000);
+    const t = setInterval(poll, 10000);
     return () => clearInterval(t);
   }, [poll]);
+
+  // Real-time updates via WebSocket
+  useEffect(() => {
+    let ws;
+    try {
+      ws = new WebSocket(wsUrl(`/ws/chat/${id}`));
+      ws.onmessage = (ev) => {
+        try {
+          const data = JSON.parse(ev.data);
+          if (data.type === "message") {
+            setMsgs((prev) => {
+              const list = prev || [];
+              if (list.some((m) => m.id === data.message.id)) return list;
+              return [...list, data.message];
+            });
+            api.post(`/chats/${id}/read`).catch(() => {});
+          }
+        } catch { /* ignore */ }
+      };
+    } catch { /* ignore */ }
+    return () => { try { ws && ws.close(); } catch { /* ignore */ } };
+  }, [id]);
 
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); }, [msgs?.length]);
 
