@@ -6,6 +6,7 @@ import { api, apiError } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
 import { Avatar } from "@/components/Avatar";
 import { BackHeader } from "@/components/BackHeader";
+import { MonthDayPicker } from "@/components/MonthDayPicker";
 import { Card, Btn, Field, inputCls, inputStyle, RoleChip } from "@/components/kit";
 import { Modal } from "@/components/Modal";
 
@@ -13,8 +14,14 @@ const PREF_LABELS = {
   notify_huddle: "Huddle announcements",
   notify_timeoff: "Time off updates",
   notify_chat: "New chat messages",
-  notify_birthdays: "Birthdays & anniversaries",
+  notify_birthdays: "Birthday notifications",
+  notify_anniversaries: "Work anniversary notifications",
   compact_mode: "Compact display",
+};
+
+const PRIVACY_LABELS = {
+  show_birthday: "Show my birthday to the team",
+  show_anniversary: "Show my work anniversary to the team",
 };
 
 export default function Profile() {
@@ -37,7 +44,8 @@ export default function Profile() {
   };
 
   const togglePref = async (k) => {
-    const next = { ...prefs, [k]: !prefs[k] };
+    const cur = prefs[k] !== false;
+    const next = { ...prefs, [k]: !cur };
     setPrefs(next);
     try {
       const { data } = await api.put("/me/preferences", { preferences: next });
@@ -65,7 +73,7 @@ export default function Profile() {
         <Field label="Full name"><input className={inputCls} style={inputStyle} value={form.name} onChange={set("name")} data-testid="profile-name" /></Field>
         <Field label="Job title"><input className={inputCls} style={inputStyle} value={form.job_title} onChange={set("job_title")} data-testid="profile-jobtitle" /></Field>
         <div className="grid grid-cols-2 gap-3">
-          <Field label="Birthday"><input type="date" className={inputCls} style={inputStyle} value={form.birthday || ""} onChange={set("birthday")} data-testid="profile-birthday" /></Field>
+          <Field label="Birthday" hint="Month & day only"><MonthDayPicker value={form.birthday || ""} onChange={(v) => setForm((f) => ({ ...f, birthday: v }))} testId="profile-birthday" /></Field>
           <Field label="Start date"><input type="date" className={inputCls} style={inputStyle} value={form.start_date || ""} onChange={set("start_date")} data-testid="profile-startdate" /></Field>
         </div>
         <Btn onClick={saveProfile} className="w-full" data-testid="save-profile">Save changes</Btn>
@@ -81,6 +89,22 @@ export default function Profile() {
             </button>
           </label>
         ))}
+      </Card>
+
+      <Card className="p-5 mb-4">
+        <h3 className="font-display text-lg mb-1" style={{ color: "var(--brand)" }}>Celebrations & privacy</h3>
+        <p className="text-xs mb-3" style={{ color: "var(--text-muted)" }}>Turn these off if you'd prefer the team not to celebrate these for you.</p>
+        {Object.keys(PRIVACY_LABELS).map((k) => {
+          const val = prefs[k] !== false;
+          return (
+            <label key={k} className="flex items-center justify-between py-2.5 cursor-pointer">
+              <span className="text-sm" style={{ color: "var(--on-surface)" }}>{PRIVACY_LABELS[k]}</span>
+              <button onClick={(e) => { e.preventDefault(); togglePref(k); }} className="relative rounded-full transition-colors" style={{ width: 44, height: 26, background: val ? "var(--teal)" : "var(--surface-tertiary)" }} data-testid={`pref-${k}`}>
+                <span className="absolute top-0.5 rounded-full bg-white transition-all" style={{ width: 22, height: 22, left: val ? 20 : 2 }} />
+              </button>
+            </label>
+          );
+        })}
       </Card>
 
       <Card className="p-5 mb-4 space-y-3">

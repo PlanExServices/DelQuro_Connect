@@ -1,10 +1,11 @@
 import { useEffect, useState, useCallback } from "react";
 import { toast } from "sonner";
-import { Upload, FileText, Image as ImageIcon, Download, Trash2, Calendar } from "lucide-react";
+import { Upload, FileText, Image as ImageIcon, Download, Trash2, Calendar, Maximize2 } from "lucide-react";
 import { api, apiError, fileUrl } from "@/lib/api";
 import { fmtBytes } from "@/lib/format";
 import { useAuth } from "@/context/AuthContext";
 import { Modal } from "@/components/Modal";
+import { ImageViewer } from "@/components/ImageViewer";
 import { PageHeader, Card, Btn, Field, inputCls, inputStyle } from "@/components/kit";
 import { Loading, EmptyState } from "@/components/States";
 
@@ -20,6 +21,7 @@ export default function Schedule() {
   const [data, setData] = useState({});
   const [loading, setLoading] = useState(true);
   const [showUpload, setShowUpload] = useState(false);
+  const [viewer, setViewer] = useState(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -66,19 +68,31 @@ export default function Schedule() {
         <div className="space-y-3">
           {list.map((s) => {
             const isPdf = (s.content_type || "").includes("pdf");
+            const isImage = (s.content_type || "").startsWith("image");
             return (
-              <Card key={s.id} className="p-4 flex items-center gap-3" data-testid="schedule-row">
-                <div className="grid place-items-center rounded-2xl shrink-0" style={{ width: 46, height: 46, background: "var(--brand-tertiary)" }}>
-                  {isPdf ? <FileText size={20} color="var(--teal)" /> : <ImageIcon size={20} color="var(--teal)" />}
-                </div>
-                <div className="min-w-0 flex-1">
-                  <p className="font-semibold text-[15px] truncate" style={{ color: "var(--brand)" }}>{s.title}</p>
-                  <p className="text-xs truncate" style={{ color: "var(--text-muted)" }}>{s.file_name} · {fmtBytes(s.size)}</p>
-                </div>
-                <a href={fileUrl(s.file_id)} target="_blank" rel="noreferrer" className="grid place-items-center rounded-full" style={{ width: 38, height: 38, background: "var(--surface-tertiary)" }} data-testid="schedule-download"><Download size={17} color="var(--brand)" /></a>
-                {user?.permissions?.manage_schedules && (
-                  <button onClick={() => del(s.id)} className="grid place-items-center rounded-full" style={{ width: 38, height: 38, background: "var(--surface-tertiary)" }} data-testid="schedule-delete"><Trash2 size={16} color="var(--error)" /></button>
+              <Card key={s.id} className="p-4" data-testid="schedule-row">
+                {isImage && (
+                  <div className="relative mb-3 group">
+                    <img src={fileUrl(s.file_id)} alt={s.title} onClick={() => setViewer(fileUrl(s.file_id))}
+                      className="rounded-2xl w-full max-h-64 object-cover cursor-zoom-in" data-testid="schedule-preview" />
+                    <button onClick={() => setViewer(fileUrl(s.file_id))} className="absolute top-2 right-2 grid place-items-center rounded-full" style={{ width: 34, height: 34, background: "var(--scrim)" }} data-testid="schedule-enlarge">
+                      <Maximize2 size={16} color="#fff" />
+                    </button>
+                  </div>
                 )}
+                <div className="flex items-center gap-3">
+                  <div className="grid place-items-center rounded-2xl shrink-0" style={{ width: 46, height: 46, background: "var(--brand-tertiary)" }}>
+                    {isPdf ? <FileText size={20} color="var(--teal)" /> : <ImageIcon size={20} color="var(--teal)" />}
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="font-semibold text-[15px] truncate" style={{ color: "var(--brand)" }}>{s.title}</p>
+                    <p className="text-xs truncate" style={{ color: "var(--text-muted)" }}>{s.file_name} · {fmtBytes(s.size)}</p>
+                  </div>
+                  <a href={fileUrl(s.file_id)} target="_blank" rel="noreferrer" className="grid place-items-center rounded-full" style={{ width: 38, height: 38, background: "var(--surface-tertiary)" }} data-testid="schedule-download"><Download size={17} color="var(--brand)" /></a>
+                  {user?.permissions?.manage_schedules && (
+                    <button onClick={() => del(s.id)} className="grid place-items-center rounded-full" style={{ width: 38, height: 38, background: "var(--surface-tertiary)" }} data-testid="schedule-delete"><Trash2 size={16} color="var(--error)" /></button>
+                  )}
+                </div>
               </Card>
             );
           })}
@@ -86,6 +100,7 @@ export default function Schedule() {
       )}
 
       {showUpload && <UploadModal onClose={() => setShowUpload(false)} onDone={() => { setShowUpload(false); load(); }} />}
+      {viewer && <ImageViewer src={viewer} onClose={() => setViewer(null)} />}
     </>
   );
 }

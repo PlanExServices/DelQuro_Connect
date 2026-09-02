@@ -1,4 +1,5 @@
 import os
+import json
 import logging
 import secrets
 import string
@@ -73,6 +74,9 @@ DEFAULT_PREFERENCES = {
     "notify_timeoff": True,
     "notify_chat": True,
     "notify_birthdays": True,
+    "notify_anniversaries": True,
+    "show_birthday": True,
+    "show_anniversary": True,
     "compact_mode": False,
 }
 
@@ -87,6 +91,21 @@ HOSPITAL_RULES = [
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def parse_month_day(b):
+    """Accept 'MM-DD' or legacy 'YYYY-MM-DD'; return (month, day) or None."""
+    if not b:
+        return None
+    parts = str(b).split("-")
+    try:
+        if len(parts) == 2:
+            return int(parts[0]), int(parts[1])
+        if len(parts) == 3:
+            return int(parts[1]), int(parts[2])
+    except (ValueError, IndexError):
+        return None
+    return None
 
 
 def gen_code(n: int = 6) -> str:
@@ -386,19 +405,24 @@ async def birthdays(user: dict = Depends(get_current_user)):
     today = datetime.now(timezone.utc).date()
     out = []
     for u in users:
-        b = u.get("birthday")
-        if not b:
+        if not (u.get("preferences") or {}).get("show_birthday", True):
             continue
+        md = parse_month_day(u.get("birthday"))
+        if not md:
+            continue
+        month, day = md
         try:
-            bd = datetime.fromisoformat(b).date()
-        except Exception:
+            nxt = date_cls(today.year, month, day)
+        except ValueError:
             continue
-        nxt = bd.replace(year=today.year)
         if nxt < today:
-            nxt = bd.replace(year=today.year + 1)
+            try:
+                nxt = date_cls(today.year + 1, month, day)
+            except ValueError:
+                continue
         days = (nxt - today).days
         if 0 <= days <= 28:
-            out.append({"name": u.get("name"), "initials": u.get("initials"), "days": days, "date": nxt.isoformat()})
+            out.append({"name": u.get("name"), "initials": u.get("initials"), "days": days, "date": f"{month:02d}-{day:02d}"})
     out.sort(key=lambda x: x["days"])
     return out
 
@@ -409,6 +433,8 @@ async def anniversaries(user: dict = Depends(get_current_user)):
     today = datetime.now(timezone.utc).date()
     out = []
     for u in users:
+        if not (u.get("preferences") or {}).get("show_anniversary", True):
+            continue
         s = u.get("start_date")
         if not s:
             continue
@@ -757,8 +783,10 @@ class ChatHub:
     def disconnect(self, cid: str, ws: WebSocket):
         self.rooms.get(cid, set()).discard(ws)
 
-    async def broadcast(self, cid: str, payload: dict):
+    async def broadcast(self, cid: str, payload: dict, exclude: WebSocket = None):
         for ws in list(self.rooms.get(cid, set())):
+            if exclude is not None and ws is exclude:
+                continue
             try:
                 await ws.send_json(payload)
             except Exception:
@@ -883,9 +911,17 @@ async def ws_chat(websocket: WebSocket, cid: str, token: str = ""):
         await websocket.close(code=1008)
         return
     await hub.connect(cid, websocket)
+    sender_id = str(user["_id"])
+    sender_name = user.get("name")
     try:
         while True:
-            await websocket.receive_text()
+            raw = await websocket.receive_text()
+            try:
+                data = json.loads(raw)
+            except Exception:
+                continue
+            if data.get("type") == "typing":
+                await hub.broadcast(cid, {"type": "typing", "user_id": sender_id, "name": sender_name}, exclude=websocket)
     except WebSocketDisconnect:
         hub.disconnect(cid, websocket)
     except Exception:

@@ -19,7 +19,11 @@ export default function ChatThread() {
   const [text, setText] = useState("");
   const [pending, setPending] = useState(null);
   const [viewer, setViewer] = useState(null);
+  const [typingName, setTypingName] = useState(null);
   const endRef = useRef(null);
+  const wsRef = useRef(null);
+  const typingTimer = useRef(null);
+  const lastTypingSent = useRef(0);
 
   const loadChat = useCallback(async () => {
     try {
@@ -50,6 +54,7 @@ export default function ChatThread() {
     let ws;
     try {
       ws = new WebSocket(wsUrl(`/ws/chat/${id}`));
+      wsRef.current = ws;
       ws.onmessage = (ev) => {
         try {
           const data = JSON.parse(ev.data);
@@ -60,11 +65,19 @@ export default function ChatThread() {
               return [...list, data.message];
             });
             api.post(`/chats/${id}/read`).catch(() => {});
+          } else if (data.type === "typing") {
+            setTypingName(data.name || "Someone");
+            clearTimeout(typingTimer.current);
+            typingTimer.current = setTimeout(() => setTypingName(null), 2500);
           }
         } catch { /* ignore */ }
       };
     } catch { /* ignore */ }
-    return () => { try { ws && ws.close(); } catch { /* ignore */ } };
+    return () => {
+      try { ws && ws.close(); } catch { /* ignore */ }
+      wsRef.current = null;
+      clearTimeout(typingTimer.current);
+    };
   }, [id]);
 
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); }, [msgs?.length]);
@@ -87,6 +100,15 @@ export default function ChatThread() {
       const { data } = await api.post("/upload", fd);
       await send(data.id);
     } catch (er) { toast.error(apiError(er)); } finally { setPending(null); }
+  };
+
+  const onInputChange = (e) => {
+    setText(e.target.value);
+    const now = Date.now();
+    if (wsRef.current?.readyState === 1 && now - lastTypingSent.current > 1500) {
+      lastTypingSent.current = now;
+      try { wsRef.current.send(JSON.stringify({ type: "typing" })); } catch { /* ignore */ }
+    }
   };
 
   const myLastReadId = (() => {
@@ -131,7 +153,15 @@ export default function ChatThread() {
         <div ref={endRef} />
       </div>
 
-      <div className="flex items-center gap-2 pt-3 mt-2 border-t" style={{ borderColor: "var(--divider)" }}>
+      <div className="min-h-[20px] px-2">
+        {typingName && (
+          <span className="text-xs font-medium inline-flex items-center gap-1" style={{ color: "var(--teal)" }} data-testid="typing-indicator">
+            {typingName} is typing<span className="animate-pulse">…</span>
+          </span>
+        )}
+      </div>
+
+      <div className="flex items-center gap-2 pt-3 mt-1 border-t" style={{ borderColor: "var(--divider)" }}>
         <label className="grid place-items-center rounded-full cursor-pointer shrink-0" style={{ width: 40, height: 40, background: "var(--surface-tertiary)" }}>
           <Camera size={18} color="var(--brand)" />
           <input type="file" accept="image/*" capture="environment" className="hidden" onChange={pickImage} />
@@ -140,7 +170,7 @@ export default function ChatThread() {
           <ImageIcon size={18} color="var(--brand)" />
           <input type="file" accept="image/*" className="hidden" onChange={pickImage} />
         </label>
-        <input className={inputCls} style={inputStyle} placeholder={pending ? "Uploading…" : "Message…"} value={text} onChange={(e) => setText(e.target.value)} onKeyDown={(e) => e.key === "Enter" && send()} data-testid="chat-input" />
+        <input className={inputCls} style={inputStyle} placeholder={pending ? "Uploading…" : "Message…"} value={text} onChange={onInputChange} onKeyDown={(e) => e.key === "Enter" && send()} data-testid="chat-input" />
         <button onClick={() => send()} className="grid place-items-center rounded-full shrink-0" style={{ width: 44, height: 44, background: "var(--teal)" }} data-testid="chat-send"><Send size={18} color="#fff" /></button>
       </div>
 

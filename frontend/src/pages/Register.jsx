@@ -3,6 +3,7 @@ import { useNavigate, Link } from "react-router-dom";
 import { toast } from "sonner";
 import { ArrowLeft } from "lucide-react";
 import { Btn, Field, inputCls, inputStyle } from "@/components/kit";
+import { MonthDayPicker } from "@/components/MonthDayPicker";
 import { useAuth } from "@/context/AuthContext";
 import { apiError } from "@/lib/api";
 
@@ -53,8 +54,8 @@ export default function Register() {
               <input data-testid="register-code" className={inputCls} style={inputStyle} value={form.code} onChange={set("code")} placeholder="e.g. 7KQ2FX" />
             </Field>
             <div className="grid grid-cols-2 gap-3">
-              <Field label="Birthday (optional)">
-                <input data-testid="register-birthday" type="date" className={inputCls} style={inputStyle} value={form.birthday} onChange={set("birthday")} />
+              <Field label="Birthday (optional)" hint="Month & day only">
+                <MonthDayPicker value={form.birthday} onChange={(v) => setForm((f) => ({ ...f, birthday: v }))} testId="register-birthday" />
               </Field>
               <Field label="Start date (optional)">
                 <input data-testid="register-startdate" type="date" className={inputCls} style={inputStyle} value={form.start_date} onChange={set("start_date")} />
