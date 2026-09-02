@@ -52,12 +52,12 @@ export default function Schedule() {
         )}
       />
 
-      <div className="flex gap-2 mb-5 p-1 rounded-full w-fit" style={{ background: "var(--surface-tertiary)" }}>
+      <div className="flex gap-2 mb-6 p-1 rounded-2xl" style={{ background: "var(--surface-tertiary)" }}>
         {PERIODS.map((p) => (
           <button key={p.key} onClick={() => setTab(p.key)} data-testid={`schedule-tab-${p.key}`}
-            className="px-4 py-2 rounded-full text-sm font-semibold transition-colors"
-            style={{ background: tab === p.key ? "var(--card)" : "transparent", color: tab === p.key ? "var(--teal)" : "var(--text-secondary)" }}>
-            {p.label} {data[p.key]?.length ? `(${data[p.key].length})` : ""}
+            className="flex-1 px-4 py-2.5 rounded-xl text-sm font-semibold transition-colors"
+            style={{ background: tab === p.key ? "var(--card)" : "transparent", color: tab === p.key ? "var(--teal)" : "var(--text-secondary)", boxShadow: tab === p.key ? "0 2px 8px rgba(15,58,95,0.08)" : "none" }}>
+            {p.label}{data[p.key]?.length ? ` (${data[p.key].length})` : ""}
           </button>
         ))}
       </div>
@@ -72,13 +72,13 @@ export default function Schedule() {
             return (
               <Card key={s.id} className="p-4" data-testid="schedule-row">
                 {isImage && (
-                  <div className="relative mb-3 group">
-                    <img src={fileUrl(s.file_id)} alt={s.title} onClick={() => setViewer(fileUrl(s.file_id))}
-                      className="rounded-2xl w-full max-h-64 object-cover cursor-zoom-in" data-testid="schedule-preview" />
-                    <button onClick={() => setViewer(fileUrl(s.file_id))} className="absolute top-2 right-2 grid place-items-center rounded-full" style={{ width: 34, height: 34, background: "var(--scrim)" }} data-testid="schedule-enlarge">
+                  <button onClick={() => setViewer(fileUrl(s.file_id))} data-testid="schedule-preview"
+                    className="relative block w-full mb-3 rounded-2xl overflow-hidden cursor-zoom-in" style={{ background: "var(--surface-tertiary)" }}>
+                    <img src={fileUrl(s.file_id)} alt={s.title} className="w-full max-h-80 object-contain" style={{ minHeight: 120 }} />
+                    <span className="absolute top-2 right-2 grid place-items-center rounded-full" style={{ width: 34, height: 34, background: "var(--scrim)" }} data-testid="schedule-enlarge">
                       <Maximize2 size={16} color="#fff" />
-                    </button>
-                  </div>
+                    </span>
+                  </button>
                 )}
                 <div className="flex items-center gap-3">
                   <div className="grid place-items-center rounded-2xl shrink-0" style={{ width: 46, height: 46, background: "var(--brand-tertiary)" }}>

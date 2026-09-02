@@ -1,0 +1,40 @@
+{
+  "summary": "Verified 3 change requests (no-demo-data, clickable Huddle mini-cards -> celebrations list, revamped Schedule page) plus regressions. 11/11 backend pytest cases (test_changes.py) pass; frontend Playwright flow passes end-to-end on mobile viewport (390x844) with real admin login on the deployed URL. Admin bday/start_date restored to empty (null-ish) after test.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "PATCH /api/me", "issue": "MeUpdate is Optional[str]=None and update logic only sets non-None values, so a client cannot POST an explicit JSON null to clear birthday/start_date. Empty string (\"\") works as a de-facto null (parse_month_day() and anniversaries both treat falsy as missing), but the DB now stores 'birthday':'' / 'start_date':'' instead of null. Consider special-casing empty string -> $unset or supporting explicit null. Not user-visible today."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_changes.py",
+    "/app/test_reports/pytest/changes_results.xml"
+  ],
+  "action_items": [
+    "OPTIONAL: allow PATCH /api/me to clear birthday/start_date via JSON null (would keep DB clean instead of storing empty strings).",
+    "PREVIOUS iteration_1 unresolved: brute-force lockout key by proxy IP+email still splits counters across ingress pods (see iteration_1 rca)."
+  ],
+  "critical_code_review_comments": [
+    "Celebrations.jsx: useEffect deps disabled via eslint-disable but the effect uses cfg.endpoint indirectly through `type` — fine, but relying on eslint-disable-line is a smell.",
+    "Schedule.jsx: `data` for each period is loaded serially via Promise.all — good. The `Loading` state resets to true on every load() call, so switching tabs causes a full spinner even though data for other tabs is cached; consider tab-scoped loading.",
+    "Huddle.jsx: bdays/annis fetched with default window (=28) on the dashboard card, but the celebrations list uses window=366. That mismatch is intentional and correct.",
+    "Backend anniversaries: uses `sd.replace(year=today.year)` which will ValueError on Feb 29 start dates in non-leap years — wrap in try/except like birthdays does.",
+    "server.py MeUpdate — see minor issue above about null-clearing."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_changes.py (new)",
+    "/app/test_reports/iteration_2.json (new)"
+  ],
+  "success_rate": {"backend": "100% (11/11 for change requests; prior iteration_1 34/35 unchanged)", "frontend": "100% of tested flows"},
+  "test_credentials": "Admin planexservices@gmail.com / Delquro2026 (only user in DB).",
+  "seed_data_creation": "Temporarily set admin birthday=<today MM-DD> and start_date=<today-2y> during celebration tests; both reset to empty string after tests (functionally null). Test schedule uploaded and deleted (row count back to 0 confirmed).",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "test_changes.py at /app/backend/tests/ covers the 3 change requests; iteration_1's backend_test.py still requires seeded staff/manager accounts (currently only admin exists, so most of the older suite would skip/fail). For frontend, use data-testid: birthdays-card, anniversaries-card, celebration-row, schedule-tab-{previous|current|upcoming}, upload-schedule-btn, schedule-title-input, schedule-file-input, submit-upload, schedule-row, schedule-preview, schedule-download, schedule-delete, image-viewer, kudos-spotlight.",
+  "rca of the issue": "N/A – all requested behaviours verified passing. Non-blocking finding: PATCH /me cannot literally set fields to JSON null (stored as empty string instead)."
+}

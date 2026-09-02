@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback } from "react";
+import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
-import { Plus, Heart, MessageCircle, Trash2, Camera, Image as ImageIcon, X, Gift, Award, MessageCircle as MC, Send, Zap } from "lucide-react";
+import { Plus, Heart, MessageCircle, Trash2, Camera, Image as ImageIcon, X, Gift, Award, MessageCircle as MC, Send, Zap, ChevronRight } from "lucide-react";
 import { api, apiError, fileUrl } from "@/lib/api";
 import { relativeTime } from "@/lib/format";
 import { useAuth } from "@/context/AuthContext";
@@ -10,14 +11,15 @@ import { ImageViewer } from "@/components/ImageViewer";
 import { PageHeader, Card, Btn, Field, inputCls, inputStyle } from "@/components/kit";
 import { Loading, EmptyState, ErrorState } from "@/components/States";
 
-function MiniCard({ icon: Icon, title, items, empty, render }) {
+function MiniCard({ icon: Icon, title, items, empty, render, onClick, testId }) {
   return (
-    <Card className="p-4 flex-1 min-w-0">
+    <Card onClick={onClick} data-testid={testId} className={`p-4 flex-1 min-w-0 ${onClick ? "cursor-pointer hover:card-shadow-lg transition-shadow" : ""}`}>
       <div className="flex items-center gap-2 mb-3">
         <div className="grid place-items-center rounded-xl" style={{ width: 32, height: 32, background: "var(--brand-tertiary)" }}>
           <Icon size={16} color="var(--teal)" />
         </div>
         <h3 className="font-display text-lg" style={{ color: "var(--brand)" }}>{title}</h3>
+        {onClick && <ChevronRight size={16} color="var(--text-muted)" className="ml-auto" />}
       </div>
       {items.length === 0 ? (
         <p className="text-sm" style={{ color: "var(--text-muted)" }}>{empty}</p>
@@ -30,6 +32,7 @@ function MiniCard({ icon: Icon, title, items, empty, render }) {
 
 export default function Huddle() {
   const { user } = useAuth();
+  const navigate = useNavigate();
   const [posts, setPosts] = useState(null);
   const [err, setErr] = useState(null);
   const [bdays, setBdays] = useState([]);
@@ -97,14 +100,15 @@ export default function Huddle() {
 
 
       <div className="flex gap-4 mb-6">
-        <MiniCard icon={Gift} title="Birthdays" items={bdays} empty="None in the next 4 weeks"          render={(b, i) => (
+        <MiniCard icon={Gift} title="Birthdays" items={bdays} empty="None in the next 4 weeks" testId="birthdays-card" onClick={() => navigate("/celebrations/birthdays")}
+          render={(b, i) => (
             <div key={i} className="flex items-center gap-2.5">
               <Avatar initials={b.initials} size={30} />
               <span className="text-sm truncate" style={{ color: "var(--on-surface)" }}>{b.name}</span>
               <span className="ml-auto text-xs font-medium" style={{ color: "var(--teal)" }}>{b.days === 0 ? "Today" : `${b.days}d`}</span>
             </div>
           )} />
-        <MiniCard icon={Award} title="Anniversaries" items={annis} empty="None in the next 4 weeks"
+        <MiniCard icon={Award} title="Anniversaries" items={annis} empty="None in the next 4 weeks" testId="anniversaries-card" onClick={() => navigate("/celebrations/anniversaries")}
           render={(a, i) => (
             <div key={i} className="flex items-center gap-2.5">
               <Avatar initials={a.initials} size={30} />

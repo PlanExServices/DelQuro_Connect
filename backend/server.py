@@ -400,7 +400,7 @@ async def team_members(user: dict = Depends(get_current_user)):
 
 
 @api.get("/team/birthdays")
-async def birthdays(user: dict = Depends(get_current_user)):
+async def birthdays(window: int = 28, user: dict = Depends(get_current_user)):
     users = await db.users.find().to_list(1000)
     today = datetime.now(timezone.utc).date()
     out = []
@@ -421,14 +421,14 @@ async def birthdays(user: dict = Depends(get_current_user)):
             except ValueError:
                 continue
         days = (nxt - today).days
-        if 0 <= days <= 28:
+        if 0 <= days <= window:
             out.append({"name": u.get("name"), "initials": u.get("initials"), "days": days, "date": f"{month:02d}-{day:02d}"})
     out.sort(key=lambda x: x["days"])
     return out
 
 
 @api.get("/team/anniversaries")
-async def anniversaries(user: dict = Depends(get_current_user)):
+async def anniversaries(window: int = 28, user: dict = Depends(get_current_user)):
     users = await db.users.find().to_list(1000)
     today = datetime.now(timezone.utc).date()
     out = []
@@ -442,12 +442,18 @@ async def anniversaries(user: dict = Depends(get_current_user)):
             sd = datetime.fromisoformat(s).date()
         except Exception:
             continue
-        nxt = sd.replace(year=today.year)
+        try:
+            nxt = sd.replace(year=today.year)
+        except ValueError:
+            nxt = date_cls(today.year, 3, 1)
         if nxt < today:
-            nxt = sd.replace(year=today.year + 1)
+            try:
+                nxt = sd.replace(year=today.year + 1)
+            except ValueError:
+                nxt = date_cls(today.year + 1, 3, 1)
         days = (nxt - today).days
         years = nxt.year - sd.year
-        if 0 <= days <= 28 and years >= 1:
+        if 0 <= days <= window and years >= 1:
             out.append({"name": u.get("name"), "initials": u.get("initials"), "label": f"{years} year{'s' if years != 1 else ''}", "years": years, "days": days})
     out.sort(key=lambda x: x["days"])
     return out
