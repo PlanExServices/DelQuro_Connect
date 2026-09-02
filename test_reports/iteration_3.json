@@ -1,0 +1,40 @@
+{
+  "summary": "Regression testing after DB projections were added to 5 user queries and AuthContext refactor (useMemo/useCallback). Verified GET /api/team/members omits password_hash and preserves the full public shape (13 fields incl. permissions); birthdays & anniversaries populate correctly with window=366, respect show_birthday/show_anniversary opt-out, and reset cleanly; /api/achievements returns leaderboard with expected shape (no password_hash, points=kudos*10, badge computed); /api/kudos/spotlight returns null when empty and returns the top recipient with a job_title key after a kudos is created. Auth regression: admin login OK, /api/auth/me OK, 5 wrong passwords -> 429 lockout keyed on email (verified 4x401 then 401 causing lockout then 429 on 6th). Frontend: admin login lands on /huddle, birthdays-card & anniversaries-card render and click-navigate to /celebrations/birthdays and /celebrations/anniversaries with proper 'Nothing coming up' empty state.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "DELETE /api/kudos or admin cleanup", "issue": "No endpoint to delete a kudos record; when a temp recipient user is DELETEd via /api/me, the kudos row remains and /api/kudos/spotlight continues to surface the (now-deleted) name for 7 days. Testing agent cleaned residue directly in MongoDB. Consider cascading kudos on user delete or exposing an admin DELETE /api/kudos/{id}."},
+      {"endpoint": "PATCH /api/me", "issue": "Still cannot clear birthday/start_date via explicit JSON null (Optional[str] with exclude-None update). Empty string works as de-facto null (parse_month_day treats falsy as missing) but stores '' instead of null. Same as iteration_2 note."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_projections.py",
+    "/app/test_reports/pytest/projections_results.xml"
+  ],
+  "action_items": [
+    "Consider cascading kudos deletion when a user is removed (or add admin DELETE /api/kudos/{id}) so spotlight doesn't advertise ghost users for 7 days.",
+    "OPTIONAL from prior iteration: allow PATCH /api/me to null-clear birthday/start_date."
+  ],
+  "critical_code_review_comments": [
+    "server.py birthdays/anniversaries: projections drop preferences default handling? public_user still uses DEFAULT_PREFERENCES fallback in team/members, but birthdays/anniversaries endpoints read u.get('preferences') || {} and default show_birthday=True — correct behaviour.",
+    "server.py anniversaries: sd.replace(year=today.year) is wrapped in try/except now — Feb-29 case OK.",
+    "AuthContext.js useMemo/useCallback refactor: verified via full login->huddle->celebrations navigation, no re-render loops observed, token persisted via delquro_token localStorage key.",
+    "kudos_spotlight: aggregation groups on to_id but relies on `to_name`/`to_initials` denormalised at kudos creation time — if the user is renamed later, spotlight will show the stale name. Low priority."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_projections.py (new)",
+    "/app/test_reports/iteration_3.json (new)"
+  ],
+  "success_rate": {"backend": "100% (6/6 new projection/regression tests)", "frontend": "100% of tested flows"},
+  "test_credentials": "Admin planexservices@gmail.com / Delquro2026 (only permanent user).",
+  "seed_data_creation": "During tests: (1) admin birthday/start_date set to today/-2y, then reset to empty string. (2) Temp user TEST_kudos_target@example.com created via /auth/register + admin gave 1 kudos, then temp user self-deleted via DELETE /me; residual kudos doc and admin kudos counter cleaned directly via MongoDB (delete_many + $set kudos=0). Verified post-cleanup: /team/members returns 1 admin only, /kudos/spotlight returns null, admin fields empty.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "test_projections.py covers projection regression + auth lockout + celebrations population/opt-out. NOTE the lockout test uses a random TEST_lockout_<ts>@example.com so it doesn't hurt the admin — but successive runs create login_attempts records for those emails; harmless. Also note kudos are NOT cascaded on user delete; if you create a temp user + kudos in tests, clean via direct MongoDB delete_many on db.kudos plus reset admin.kudos to 0.",
+  "rca of the issue": "N/A – all regression cases pass. Only ergonomic finding is kudos non-cascade on user delete (see minor)."
+}

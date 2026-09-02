@@ -395,13 +395,13 @@ async def delete_me(body: DeleteMeBody, user: dict = Depends(get_current_user)):
 # ================================================================ TEAM / META
 @api.get("/team/members")
 async def team_members(user: dict = Depends(get_current_user)):
-    users = await db.users.find().to_list(1000)
+    users = await db.users.find({}, {"email": 1, "name": 1, "initials": 1, "campus": 1, "role": 1, "job_title": 1, "birthday": 1, "start_date": 1, "location_id": 1, "kudos": 1, "preferences": 1}).to_list(1000)
     return [public_user(u) for u in users]
 
 
 @api.get("/team/birthdays")
 async def birthdays(window: int = 28, user: dict = Depends(get_current_user)):
-    users = await db.users.find().to_list(1000)
+    users = await db.users.find({}, {"name": 1, "initials": 1, "birthday": 1, "preferences": 1}).to_list(1000)
     today = datetime.now(timezone.utc).date()
     out = []
     for u in users:
@@ -429,7 +429,7 @@ async def birthdays(window: int = 28, user: dict = Depends(get_current_user)):
 
 @api.get("/team/anniversaries")
 async def anniversaries(window: int = 28, user: dict = Depends(get_current_user)):
-    users = await db.users.find().to_list(1000)
+    users = await db.users.find({}, {"name": 1, "initials": 1, "start_date": 1, "preferences": 1}).to_list(1000)
     today = datetime.now(timezone.utc).date()
     out = []
     for u in users:
@@ -962,7 +962,7 @@ def badge_for(kudos: int) -> str:
 
 @api.get("/achievements")
 async def achievements(user: dict = Depends(get_current_user)):
-    users = await db.users.find().to_list(1000)
+    users = await db.users.find({}, {"name": 1, "initials": 1, "job_title": 1, "kudos": 1}).to_list(1000)
     board = [{
         "id": str(u["_id"]),
         "name": u.get("name"),
@@ -992,7 +992,7 @@ async def kudos_spotlight(user: dict = Depends(get_current_user)):
     top = res[0]
     job_title = None
     try:
-        u = await db.users.find_one({"_id": ObjectId(top["_id"])})
+        u = await db.users.find_one({"_id": ObjectId(top["_id"])}, {"job_title": 1})
         job_title = u.get("job_title") if u else None
     except Exception:
         pass
