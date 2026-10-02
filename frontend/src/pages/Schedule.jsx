@@ -10,9 +10,9 @@ import { PageHeader, Card, Btn, Field, inputCls, inputStyle } from "@/components
 import { Loading, EmptyState } from "@/components/States";
 
 const PERIODS = [
-  { key: "previous", label: "Previous" },
-  { key: "current", label: "Current" },
+  { key: "current", label: "Current Active" },
   { key: "upcoming", label: "Upcoming" },
+  { key: "previous", label: "All Posted" },
 ];
 
 export default function Schedule() {
@@ -46,7 +46,7 @@ export default function Schedule() {
     <>
       <PageHeader
         title="Schedule library"
-        subtitle="Shift schedules for your team"
+        subtitle="Master schedule library — every upload is preserved"
         action={user?.permissions?.manage_schedules && (
           <Btn onClick={() => setShowUpload(true)} data-testid="upload-schedule-btn"><Upload size={16} /> Upload</Btn>
         )}

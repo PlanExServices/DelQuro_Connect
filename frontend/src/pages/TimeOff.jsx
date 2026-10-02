@@ -73,7 +73,7 @@ export default function TimeOff() {
 
   return (
     <>
-      <PageHeader title="Time Off" subtitle="View and manage time off requests" />
+      <PageHeader title="Time Off" subtitle="Capacity engine — system default 2/day with custom overrides 0–8" />
 
       <Card className="p-5 mb-4">
         <div className="flex items-center justify-between mb-4">

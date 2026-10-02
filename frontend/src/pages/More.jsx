@@ -1,5 +1,5 @@
 import { useNavigate } from "react-router-dom";
-import { ChevronRight, Grid, Users, Shield, MapPin, UserPlus, FileText, Award } from "lucide-react";
+import { ChevronRight, Grid, Users, Shield, MapPin, UserPlus, FileText, Award, MessageSquare } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 import { Avatar } from "@/components/Avatar";
 import { PageHeader, Card, RoleChip } from "@/components/kit";
@@ -60,9 +60,13 @@ export default function More() {
         </Section>
       )}
 
-      <Section title="Knowledge">
+      <Section title="Hospital Tools">
         <Tile icon={FileText} label="Hospital Rules" onClick={() => navigate("/more/knowledge/hospital_rules")} testId="tile-rules" />
         <Tile icon={Award} label="Staff Achievements" onClick={() => navigate("/more/achievements")} testId="tile-achievements" />
+      </Section>
+
+      <Section title="Shift Chat">
+        <Tile icon={MessageSquare} label="Team Channels" tag="#general · #vet-techs · #doctors-dvm" onClick={() => navigate("/chat")} testId="tile-chat" />
       </Section>
     </>
   );
