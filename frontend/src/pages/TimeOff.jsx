@@ -199,7 +199,7 @@ function LimitModal({ date, current, onClose, onDone }) {
       footer={<Btn onClick={submit} className="w-full" data-testid="submit-limit">Save</Btn>}>
       <p className="text-sm mb-4" style={{ color: "var(--text-secondary)" }}>{longDate(date)}</p>
       <Field label="Maximum approved days off">
-        <input type="number" min={0} className={inputCls} style={inputStyle} value={val} onChange={(e) => setVal(e.target.value)} data-testid="limit-input" />
+        <input type="number" min={0} max={8} className={inputCls} style={inputStyle} value={val} onChange={(e) => setVal(e.target.value)} data-testid="limit-input" />
       </Field>
     </Modal>
   );

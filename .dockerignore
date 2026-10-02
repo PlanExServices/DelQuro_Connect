@@ -1,0 +1,23 @@
+# Keep the backend image build context small and free of secrets.
+.git
+.gitignore
+.gitconfig
+.github
+.env
+.env.*
+*.env
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+**/node_modules
+frontend
+references
+memory
+test_reports
+tests
+.arena
+.cache
+.venv
+venv
+build
+dist

@@ -1,0 +1,7 @@
+# Development extras (not needed in production).
+#   pip install -r backend/requirements-dev.txt
+#
+# mongomock-motor lets backend/dev_server.py run the real app against an
+# in-memory MongoDB stand-in, so no local MongoDB installation is required.
+-r requirements.txt
+mongomock-motor>=0.0.36

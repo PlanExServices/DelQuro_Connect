@@ -101,3 +101,185 @@
 #====================================================================================================
 # Testing Data - Main Agent and testing sub agent both should log testing data below this section
 #====================================================================================================
+
+user_problem_statement: "Please fix this repo (install/build/deploy breakage plus the defects left open by earlier test iterations)"
+
+backend:
+  - task: "Dependencies installable from public PyPI"
+    implemented: true
+    working: true
+    file: "backend/requirements.txt"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: false
+        agent: "main"
+        comment: "emergentintegrations==0.2.0 is not published on PyPI and is imported nowhere, so `pip install -r backend/requirements.txt` (and the Docker build) failed with 'No matching distribution found'. Removed it plus other unused scaffold packages (passlib, python-jose, boto3, pandas, numpy, requests-oauthlib, jq, typer, black, isort, flake8, mypy)."
+      - working: true
+        agent: "main"
+        comment: "Verified in a clean python3.11 venv: pip install -r backend/requirements.txt + requirements-dev.txt succeed."
+
+  - task: "Upload size guard (MongoDB 16 MB document limit)"
+    implemented: true
+    working: true
+    file: "backend/server.py"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "main"
+        comment: "POST /api/upload and POST /api/schedules/upload now reject files > 15 MB with 413 instead of failing the insert with a 500. Verified: 15 MB + 1 byte -> 413."
+
+  - task: "PATCH /api/me can clear birthday/start_date"
+    implemented: true
+    working: true
+    file: "backend/server.py"
+    stuck_count: 1
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+      - working: false
+        agent: "testing"
+        comment: "iteration_2/iteration_3: explicit JSON null could not clear birthday/start_date; empty string was stored instead of null."
+      - working: true
+        agent: "main"
+        comment: "Now uses model_dump(exclude_unset=True); null/empty strings $unset the field, MM-DD / YYYY-MM-DD are validated (02-30 rejected, 02-29 accepted), empty name -> 400. Verified 5/5 checks."
+
+  - task: "Account deletion cascade + kudos spotlight"
+    implemented: true
+    working: true
+    file: "backend/server.py"
+    stuck_count: 1
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+      - working: false
+        agent: "testing"
+        comment: "iteration_3: kudos are not cascaded on user delete, so /api/kudos/spotlight kept advertising deleted users for 7 days."
+      - working: true
+        agent: "main"
+        comment: "DELETE /api/me now cascades posts/comments/kudos/time-off and removes the user from chat memberships; spotlight walks the leaderboard and only features users that still exist (live name/job_title, deterministic tie-break on most recent kudos). Verified with a temp user + 3 kudos: featured before delete, gone after."
+
+  - task: "Login lockout hygiene"
+    implemented: true
+    working: true
+    file: "backend/server.py"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "main"
+        comment: "Counter is keyed on the normalised email (previous fix, confirmed by 5x401 -> 429 in backend_test.py); added window reset after expiry, updated_at bookkeeping and a 1-day TTL index on login_attempts."
+
+  - task: "Time-off capacity rules"
+    implemented: true
+    working: true
+    file: "backend/server.py"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "main"
+        comment: "System default is now 2/day (was 3, contradicting the UI copy 'system default 2/day' and the README), overrides are validated 0-8, dates must be YYYY-MM-DD, and duplicate requests for the same date return 409."
+
+  - task: "Health endpoints / env validation / CORS ordering"
+    implemented: true
+    working: true
+    file: "backend/server.py"
+    stuck_count: 0
+    priority: "low"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "main"
+        comment: "Added GET /health and GET /api/health, fail-fast readable errors for missing MONGO_URL/DB_NAME/JWT_SECRET, and registered CORSMiddleware before include_router."
+
+frontend:
+  - task: "npm install works from a clean checkout"
+    implemented: true
+    working: true
+    file: "frontend/package.json"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: false
+        agent: "main"
+        comment: "npm install failed twice: ERESOLVE date-fns@4.1.0 vs react-day-picker@8.10.1 (peer ^2.28||^3) and react@19 vs react-day-picker@8.10.1 (peer ^16.8||^17||^18); --legacy-peer-deps then died fetching @emergentbase/visual-edits from assets.emergent.sh, which is unreachable (curl exit 35)."
+      - working: true
+        agent: "main"
+        comment: "react-day-picker bumped to 9.14.0 (peer react >=16.8), the unreachable tarball dependency removed (craco.config.js already degrades gracefully without it), package-lock.json committed. `npm install` now adds 1489 packages with no errors; `npm run build` compiles successfully."
+
+  - task: "Backend URL fallback + dev proxy + preview host"
+    implemented: true
+    working: true
+    file: "frontend/src/lib/api.js, frontend/craco.config.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: false
+        agent: "main"
+        comment: "A missing REACT_APP_BACKEND_URL produced requests to 'undefined/api'; the dev server rejected non-localhost hosts."
+      - working: true
+        agent: "main"
+        comment: "API falls back to the relative /api path; craco dev server binds 0.0.0.0, allows all hosts and proxies /api (incl. websockets) to BACKEND_PROXY_TARGET (default http://127.0.0.1:8000) when no backend URL is configured. Verified end-to-end through the dev server: login 200 and posts/chats/schedules/members/achievements/spotlight all 200."
+
+  - task: "Third-party blocking script in index.html"
+    implemented: true
+    working: true
+    file: "frontend/public/index.html"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "main"
+        comment: "Removed the blocking <script src='https://assets.emergent.sh/scripts/emergent-main.js'> — an unreachable third-party host that delayed/blanked the app. The PostHog snippet was left untouched."
+
+  - task: "Calendar component on react-day-picker v9 API"
+    implemented: true
+    working: true
+    file: "frontend/src/components/ui/calendar.jsx"
+    stuck_count: 0
+    priority: "low"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "main"
+        comment: "Rewritten for v9 (month_caption/button_previous/button_next/month_grid/day_button classNames, Chevron component, style.css import). The component is not imported by any page, but it compiles in the production build."
+
+  - task: "Time off day-limit input bounds"
+    implemented: true
+    working: true
+    file: "frontend/src/pages/TimeOff.jsx"
+    stuck_count: 0
+    priority: "low"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "main"
+        comment: "Number input now has max=8, matching the backend's 0-8 validation."
+
+metadata:
+  created_by: "main_agent"
+  version: "1.1"
+  test_sequence: 4
+  run_ui: true
+
+test_plan:
+  current_focus:
+    - "Backend regression: backend_test.py 35/35, test_changes.py 11/11, test_projections.py 6/6 (pytest, seeded workspace)"
+    - "New guards: uploads, day limits, duplicate time off, delete-me cascade, PATCH /me clearing (18/18 ad-hoc checks)"
+    - "Frontend: npm install + npm run build + dev-server proxy against the FastAPI backend"
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
+
+agent_communication:
+  - agent: "main"
+    message: "Fixed the install/build blockers (npm peer conflict + unreachable @emergentbase/visual-edits tarball, emergentintegrations PyPI pin, lowercase dockerfile) and the open defects from iterations 1-3. Verified locally: pip install clean, npm install + npm run build clean, 52/52 backend pytest cases pass in our seeded test workspace, and the full stack (CRA dev server -> /api proxy -> FastAPI) serves the app. Remaining known gaps are documented in the README: no seeder/persona switcher, no shift-based time off, /api/files/{fid} has no per-file ACL, chat access tiers are stored but not enforced."

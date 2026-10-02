@@ -26,7 +26,13 @@
         -->
         <title>DelQuro Connect — Veterinary Hospital Coordination</title>
         <script>window.addEventListener("error",function(e){if(e.error instanceof DOMException&&e.error.name==="DataCloneError"&&e.message&&e.message.includes("PerformanceServerTiming")){e.stopImmediatePropagation();e.preventDefault()}},true);</script>
-        <script src="https://assets.emergent.sh/scripts/emergent-main.js"></script>
+        <!--
+        NOTE: a blocking <script src="https://assets.emergent.sh/scripts/emergent-main.js">
+        used to sit here. It is a third-party host, so a blocked/unreachable CDN
+        delayed or blanked the app for real users. Visual editing is optional and
+        craco.config.js already loads it only when the package is installed; add
+        the tag back (with async/defer) only if you need that tooling.
+        -->
     </head>
     <body>
         <noscript>You need to enable JavaScript to run this app.</noscript>
