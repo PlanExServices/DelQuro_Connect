@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
-import { Plus, Heart, MessageCircle, Trash2, Camera, Image as ImageIcon, X, Gift, Award, MessageCircle as MC, Send, Zap, ChevronRight } from "lucide-react";
+import { Plus, Heart, MessageCircle, Trash2, Camera, Image as ImageIcon, X, Gift, Award, MessageCircle as MC, Send, Zap, ChevronRight, ShieldCheck } from "lucide-react";
 import { api, apiError, fileUrl } from "@/lib/api";
 import { relativeTime } from "@/lib/format";
 import { useAuth } from "@/context/AuthContext";
@@ -97,6 +97,22 @@ export default function Huddle() {
           <Avatar initials={spotlight.initials} size={48} teal />
         </div>
       )}
+
+      {/* Pinned clinical protocol banner per CAH spec */}
+      <div className="rounded-3xl p-5 mb-6 animate-fade-up" style={{ background: "linear-gradient(135deg, var(--burgundy) 0%, var(--burgundy-dark) 100%)", boxShadow: "0 4px 20px rgba(107,29,47,0.15)" }} data-testid="pinned-protocol-banner">
+        <div className="flex items-start gap-4">
+          <div className="grid place-items-center rounded-2xl shrink-0" style={{ width: 52, height: 52, background: "var(--gold)" }}>
+            <ShieldCheck size={26} color="#fff" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2 mb-1">
+              <span className="text-[10px] font-bold uppercase tracking-[0.15em] px-2 py-0.5 rounded-full text-white" style={{ background: "var(--gold)" }}>Pinned Protocol</span>
+            </div>
+            <h3 className="font-display text-xl text-white leading-snug mb-1">Surgical & Antibiotic Safety Protocols</h3>
+            <p className="text-sm text-white/80 leading-relaxed">Always confirm patient identity and chart before any procedure. Confirm antibiotic dosage with the on-call veterinarian. Mark as Read & Understood after review.</p>
+          </div>
+        </div>
+      </div>
 
 
       <div className="flex gap-4 mb-6">
