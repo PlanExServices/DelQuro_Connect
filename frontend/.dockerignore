@@ -1,0 +1,13 @@
+node_modules
+build
+coverage
+
+# Never bake secrets into an image; the documented template is kept.
+.env
+.env.*
+*.env
+!.env.example
+
+npm-debug.log*
+yarn-error.log*
+.DS_Store

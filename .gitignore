@@ -31,6 +31,7 @@ dist/
 dist
 
 # Environment files (comprehensive coverage)
+# (the *.example templates are committed on purpose — see the negations below)
 
 *token.json*
 *credentials.json*
@@ -83,6 +84,10 @@ android-sdk/
 .env
 .env.*
 *.env
+
+# ...but keep the committed templates that document the expected variables.
+!.env.example
+!**/.env.example
 credentials.json
 *.key
 .credentials

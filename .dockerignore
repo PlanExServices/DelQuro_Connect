@@ -1,0 +1,37 @@
+# Applies to builds whose context is the repository root
+# (Dockerfile = all-in-one image, Dockerfile.backend = API-only image).
+# frontend/ has its own .dockerignore for the frontend-only build context.
+
+# --- never ship these ---
+.git
+.gitignore
+.gitconfig
+.github
+.arena
+.emergent
+memory
+test_reports
+tests
+references
+docs
+*.md
+
+# --- secrets (templates are fine) ---
+.env
+.env.*
+*.env
+!.env.example
+!**/.env.example
+
+# --- build noise ---
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+**/node_modules
+frontend/build
+frontend/coverage
+build
+dist
+.venv
+venv
+.cache

@@ -108,6 +108,26 @@ let webpackConfig = {
 };
 
 webpackConfig.devServer = (devServerConfig) => {
+  // Listen on all interfaces and don't reject proxied/preview hostnames —
+  // required when the dev server runs in a container behind a proxy
+  // (e.g. https://<port>-<sandbox>.e2b.app) instead of on localhost.
+  devServerConfig.host = process.env.HOST || "0.0.0.0";
+  devServerConfig.allowedHosts = "all";
+
+  // When REACT_APP_BACKEND_URL is not set, src/lib/api.js calls the relative
+  // "/api" path. Proxy it to the local FastAPI backend so `npm start` works
+  // out of the box (@craco/craco → webpack-dev-server v5 array syntax).
+  if (!process.env.REACT_APP_BACKEND_URL) {
+    devServerConfig.proxy = [
+      {
+        context: ["/api"],
+        target: process.env.BACKEND_PROXY_TARGET || "http://127.0.0.1:8000",
+        changeOrigin: true,
+        ws: true,
+      },
+    ];
+  }
+
   // Add health check endpoints if enabled
   if (config.enableHealthCheck && setupHealthEndpoints && healthPluginInstance) {
     const originalSetupMiddlewares = devServerConfig.setupMiddlewares;

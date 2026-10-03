@@ -1,6 +1,7 @@
 import os
 import json
 import logging
+import re
 import secrets
 import string
 from pathlib import Path
@@ -8,13 +9,14 @@ from datetime import datetime, timezone, timedelta, date as date_cls
 from typing import List, Optional
 
 from fastapi import FastAPI, APIRouter, HTTPException, Request, Depends, UploadFile, File, Form, WebSocket, WebSocketDisconnect
-from fastapi.responses import Response
+from fastapi.responses import FileResponse, Response
+from fastapi.staticfiles import StaticFiles
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 from bson import ObjectId
 from bson.binary import Binary
-from pydantic import BaseModel, EmailStr, field_validator
+from pydantic import BaseModel, EmailStr, Field, field_validator
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
@@ -24,15 +26,70 @@ from auth import (
     decode_token, token_from_request,
 )
 
-mongo_url = os.environ["MONGO_URL"]
-client = AsyncIOMotorClient(mongo_url)
-db = client[os.environ["DB_NAME"]]
+def require_env(name: str, default: Optional[str] = None) -> str:
+    """Fail fast (with a readable message) instead of raising a bare KeyError."""
+    value = os.environ.get(name, default)
+    if not value:
+        raise RuntimeError(
+            f"Missing required environment variable {name!r}. "
+            "Set MONGO_URL, DB_NAME and JWT_SECRET before starting the server "
+            "(see backend/.env.example)."
+        )
+    return value
 
-app = FastAPI()
+
+mongo_url = require_env("MONGO_URL")
+# Fail fast (5s) instead of hanging each request for motor's 30s default when
+# MongoDB is unreachable or MONGO_URL is wrong — deployment problems then show
+# up immediately in the logs and in /health/ready.
+client = AsyncIOMotorClient(mongo_url, serverSelectionTimeoutMS=5000)
+db = client[require_env("DB_NAME")]
+require_env("JWT_SECRET")  # auth.get_jwt_secret() reads the same variable
+
+app = FastAPI(title="DelQuro Connect API")
 api = APIRouter(prefix="/api")
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("delquro")
+
+# MongoDB documents are capped at 16 MB, so reject oversized uploads up front
+# with a clear 413 instead of letting the insert blow up with a 500.
+MAX_UPLOAD_BYTES = 15 * 1024 * 1024
+
+# Login brute-force protection
+LOCKOUT_ATTEMPTS = 5
+LOCKOUT_MINUTES = 15
+
+# Time-off capacity: system default of 2 staff/day (custom overrides 0-8).
+SYSTEM_DEFAULT_DAY_LIMIT = 2
+MIN_DAY_LIMIT = 0
+MAX_DAY_LIMIT = 8
+
+
+class NormalizePathMiddleware:
+    """Collapse duplicate slashes in request paths ("//api/x" → "/api/x").
+
+    Reverse proxies can produce double slashes (e.g. nginx `proxy_pass` when the
+    upstream URL ends with "/"). Without this, such requests miss every route
+    and return a confusing 404.
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") in ("http", "websocket") and "//" in scope.get("path", ""):
+            scope = dict(scope)
+            scope["path"] = re.sub(r"/{2,}", "/", scope["path"])
+        await self.app(scope, receive, send)
+
+
+def ensure_upload_size(content: bytes) -> None:
+    if len(content) > MAX_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"File is too large. The maximum upload size is {MAX_UPLOAD_BYTES // (1024 * 1024)} MB.",
+        )
 
 # ---------------------------------------------------------------- permissions
 MANAGER_PERMS = [
@@ -185,6 +242,39 @@ class MeUpdate(BaseModel):
     birthday: Optional[str] = None
     start_date: Optional[str] = None
 
+    @field_validator("birthday")
+    @classmethod
+    def birthday_format(cls, v):
+        """'' / None clears the field; otherwise require MM-DD (legacy YYYY-MM-DD ok)."""
+        if v is None or not str(v).strip():
+            return None
+        parts = str(v).strip().split("-")
+        try:
+            if len(parts) == 2:
+                month, day = int(parts[0]), int(parts[1])
+            elif len(parts) == 3:
+                month, day = int(parts[1]), int(parts[2])
+            else:
+                raise ValueError
+        except ValueError:
+            raise ValueError("Birthday must be in MM-DD format")
+        try:
+            # Year 2000 is a leap year, so 02-29 (leap-day birthdays) is kept.
+            date_cls(2000, month, day)
+        except ValueError:
+            raise ValueError("Birthday must be a valid month and day")
+        return f"{month:02d}-{day:02d}"
+
+    @field_validator("start_date")
+    @classmethod
+    def start_date_format(cls, v):
+        if v is None or not str(v).strip():
+            return None
+        try:
+            return datetime.fromisoformat(str(v).strip()).date().isoformat()
+        except ValueError:
+            raise ValueError("Start date must be in YYYY-MM-DD format")
+
 
 class PrefsBody(BaseModel):
     preferences: dict
@@ -224,7 +314,15 @@ class TimeOffBody(BaseModel):
 
 class DayLimitBody(BaseModel):
     date: str
-    limit: int
+    limit: int = Field(ge=MIN_DAY_LIMIT, le=MAX_DAY_LIMIT)
+
+    @field_validator("date")
+    @classmethod
+    def date_format(cls, v):
+        try:
+            return datetime.fromisoformat(str(v).strip()).date().isoformat()
+        except ValueError:
+            raise ValueError("Date must be in YYYY-MM-DD format")
 
 
 class ChatBody(BaseModel):
@@ -267,17 +365,39 @@ async def auth_status():
 
 async def check_lockout(identifier: str):
     rec = await db.login_attempts.find_one({"identifier": identifier})
-    if rec and rec.get("count", 0) >= 5:
-        locked_until = rec.get("locked_until")
-        if locked_until and datetime.fromisoformat(locked_until) > datetime.now(timezone.utc):
-            raise HTTPException(status_code=429, detail="Too many attempts. Try again in a few minutes.")
+    if not rec or rec.get("count", 0) < LOCKOUT_ATTEMPTS:
+        return
+    locked_until = rec.get("locked_until")
+    if locked_until and datetime.fromisoformat(locked_until) > datetime.now(timezone.utc):
+        raise HTTPException(
+            status_code=429,
+            detail=f"Too many failed attempts. Try again in {LOCKOUT_MINUTES} minutes.",
+        )
 
 
 async def register_fail(identifier: str):
-    locked_until = (datetime.now(timezone.utc) + timedelta(minutes=15)).isoformat()
+    """Count a failed login. The counter resets once a lockout window expires."""
+    now = datetime.now(timezone.utc)
+    rec = await db.login_attempts.find_one({"identifier": identifier})
+    locked_until = rec.get("locked_until") if rec else None
+    expired = True
+    if locked_until:
+        try:
+            expired = datetime.fromisoformat(locked_until) <= now
+        except ValueError:
+            expired = True
+    count = 1 if (not rec or expired) else rec.get("count", 0) + 1
     await db.login_attempts.update_one(
         {"identifier": identifier},
-        {"$inc": {"count": 1}, "$set": {"locked_until": locked_until}},
+        {
+            "$set": {
+                "count": count,
+                "locked_until": (now + timedelta(minutes=LOCKOUT_MINUTES)).isoformat(),
+                # Stored as a BSON date (not a string) so the TTL index below
+                # actually expires the record.
+                "updated_at": now,
+            }
+        },
         upsert=True,
     )
 
@@ -356,11 +476,35 @@ async def me(user: dict = Depends(get_current_user)):
 
 @api.patch("/me")
 async def update_me(body: MeUpdate, user: dict = Depends(get_current_user)):
-    updates = {k: v for k, v in body.model_dump().items() if v is not None}
+    """Only the fields present in the request are touched.
+
+    Sending an explicit null (or "") for `birthday` / `start_date` clears the
+    stored value instead of saving an empty string.
+    """
+    provided = body.model_dump(exclude_unset=True)
+    updates, unsets = {}, {}
+    for key, value in provided.items():
+        if value is None:
+            if key in ("birthday", "start_date", "job_title"):
+                unsets[key] = ""
+            continue
+        value = value.strip() if isinstance(value, str) else value
+        if value == "":
+            if key in ("birthday", "start_date", "job_title"):
+                unsets[key] = ""
+            continue
+        updates[key] = value
+    if not updates.get("name") and "name" in provided:
+        raise HTTPException(status_code=400, detail="Name cannot be empty")
     if "name" in updates:
         updates["initials"] = initials_of(updates["name"])
+    op = {}
     if updates:
-        await db.users.update_one({"_id": user["_id"]}, {"$set": updates})
+        op["$set"] = updates
+    if unsets:
+        op["$unset"] = unsets
+    if op:
+        await db.users.update_one({"_id": user["_id"]}, op)
     fresh = await db.users.find_one({"_id": user["_id"]})
     return public_user(fresh)
 
@@ -388,6 +532,19 @@ async def delete_me(body: DeleteMeBody, user: dict = Depends(get_current_user)):
         other_admin = await db.users.find_one({"role": "admin", "_id": {"$ne": user["_id"]}})
         if not other_admin:
             raise HTTPException(status_code=400, detail="You are the only admin. Assign another admin first.")
+
+    uid = str(user["_id"])
+    # Cascade so a deleted account does not linger as a "ghost" in the team
+    # feed, the kudos spotlight or the time-off calendar.
+    posts = await db.posts.find({"author_id": uid}, {"_id": 1}).to_list(500)
+    post_ids = [str(p["_id"]) for p in posts]
+    if post_ids:
+        await db.comments.delete_many({"post_id": {"$in": post_ids}})
+    await db.posts.delete_many({"author_id": uid})
+    await db.comments.delete_many({"author_id": uid})
+    await db.kudos.delete_many({"$or": [{"to_id": uid}, {"from_id": uid}]})
+    await db.timeoff.delete_many({"user_id": uid})
+    await db.chats.update_many({"member_ids": uid}, {"$pull": {"member_ids": uid}})
     await db.users.delete_one({"_id": user["_id"]})
     return {"ok": True}
 
@@ -630,11 +787,22 @@ async def create_timeoff(body: TimeOffBody, user: dict = Depends(get_current_use
         status = "pending"
     if status not in ("pending", "approved", "declined"):
         status = "pending"
+    try:
+        req_date = datetime.fromisoformat(str(body.date).strip()).date().isoformat()
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Date must be in YYYY-MM-DD format")
+    duplicate = await db.timeoff.find_one({
+        "user_id": str(user["_id"]),
+        "date": req_date,
+        "status": {"$in": ["pending", "approved"]},
+    })
+    if duplicate:
+        raise HTTPException(status_code=409, detail="There is already a time-off request for that date")
     doc = {
         "user_id": str(user["_id"]),
         "name": user.get("name"),
         "initials": user.get("initials"),
-        "date": body.date,
+        "date": req_date,
         "reason": body.reason,
         "status": status,
         "created_at": now_iso(),
@@ -671,7 +839,7 @@ async def delete_timeoff(tid: str, user: dict = Depends(get_current_user)):
 @api.get("/daylimit")
 async def get_daylimit(date: str, user: dict = Depends(get_current_user)):
     rec = await db.daylimits.find_one({"date": date})
-    limit = rec.get("limit") if rec else 3
+    limit = rec.get("limit") if rec else SYSTEM_DEFAULT_DAY_LIMIT
     approved = await db.timeoff.count_documents({"date": date, "status": "approved"})
     return {"date": date, "limit": limit, "approved": approved, "remaining": max(limit - approved, 0)}
 
@@ -711,6 +879,7 @@ async def upload_schedule(
     user: dict = Depends(require("manage_schedules")),
 ):
     content = await file.read()
+    ensure_upload_size(content)
     fdoc = {
         "content": Binary(content),
         "content_type": file.content_type or "application/octet-stream",
@@ -752,6 +921,7 @@ async def delete_schedule(sid: str, user: dict = Depends(require("manage_schedul
 @api.post("/upload")
 async def upload_file(file: UploadFile = File(...), user: dict = Depends(get_current_user)):
     content = await file.read()
+    ensure_upload_size(content)
     fdoc = {
         "content": Binary(content),
         "content_type": file.content_type or "application/octet-stream",
@@ -981,25 +1151,27 @@ async def kudos_spotlight(user: dict = Depends(get_current_user)):
     since = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
     pipeline = [
         {"$match": {"created_at": {"$gte": since}}},
-        {"$group": {"_id": "$to_id", "count": {"$sum": 1},
-                    "name": {"$last": "$to_name"}, "initials": {"$last": "$to_initials"}}},
-        {"$sort": {"count": -1}},
-        {"$limit": 1},
+        {"$group": {"_id": "$to_id", "count": {"$sum": 1}, "last": {"$max": "$created_at"}}},
+        {"$sort": {"count": -1, "last": -1}},
+        {"$limit": 50},
     ]
-    res = await db.kudos.aggregate(pipeline).to_list(1)
-    if not res:
-        return {"spotlight": None}
-    top = res[0]
-    job_title = None
-    try:
-        u = await db.users.find_one({"_id": ObjectId(top["_id"])}, {"job_title": 1})
-        job_title = u.get("job_title") if u else None
-    except Exception:
-        pass
-    return {"spotlight": {
-        "id": top["_id"], "name": top.get("name"), "initials": top.get("initials"),
-        "job_title": job_title, "count": top["count"],
-    }}
+    res = await db.kudos.aggregate(pipeline).to_list(50)
+    # Walk the leaderboard and feature the top recipient that still exists —
+    # a deleted account must never show up here (and names are read live so a
+    # rename is reflected immediately).
+    for top in res:
+        try:
+            u = await db.users.find_one({"_id": ObjectId(top["_id"])},
+                                        {"name": 1, "initials": 1, "job_title": 1})
+        except Exception:
+            u = None
+        if not u:
+            continue
+        return {"spotlight": {
+            "id": top["_id"], "name": u.get("name"), "initials": u.get("initials"),
+            "job_title": u.get("job_title"), "count": top["count"],
+        }}
+    return {"spotlight": None}
 
 
 @api.get("/kudos")
@@ -1121,23 +1293,123 @@ async def create_location(body: LocationBody, user: dict = Depends(require("mana
     return {"id": str(res.inserted_id), "name": body.name, "campus_code": body.campus_code}
 
 
-# ---------------------------------------------------------------- bootstrap
-app.include_router(api)
+# ---------------------------------------------------------------- health
+# /health is a pure liveness probe (fast, no I/O) — use it for the Coolify
+# health check. /health/ready additionally pings MongoDB, so a wrong MONGO_URL
+# or a stopped database is visible instead of silently serving 500s.
+async def _health_payload():
+    return {"status": "ok", "service": "delquro-connect"}
 
+
+@api.get("/health")
+async def api_health():
+    return await _health_payload()
+
+
+@api.get("/health/ready")
+async def api_health_ready():
+    try:
+        await db.command("ping")
+    except Exception as e:
+        logger.error("readiness check failed — MongoDB unreachable: %s", e)
+        raise HTTPException(
+            status_code=503,
+            detail={"status": "degraded", "database": "unreachable", "error": str(e)[:200]},
+        )
+    return {"status": "ok", "database": "ok", "service": "delquro-connect"}
+
+
+@app.get("/health")
+async def health():
+    return await _health_payload()
+
+
+@app.get("/health/ready")
+async def health_ready():
+    return await api_health_ready()
+
+
+# ---------------------------------------------------------------- bootstrap
+# Middleware is registered before the router is included (idiomatic Starlette
+# ordering) so every /api route — including future ones — goes through CORS.
+#
+# Note: browsers reject `Access-Control-Allow-Origin: *` together with
+# credentials, so credentials are only enabled for explicit origin lists. This
+# app authenticates with Bearer tokens (not cookies), so nothing is lost.
+cors_origins = [o.strip() for o in os.environ.get("CORS_ORIGINS", "*").split(",") if o.strip()]
+app.add_middleware(NormalizePathMiddleware)
 app.add_middleware(
     CORSMiddleware,
-    allow_credentials=True,
-    allow_origins=os.environ.get("CORS_ORIGINS", "*").split(","),
+    allow_origins=cors_origins,
+    allow_credentials="*" not in cors_origins,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+app.include_router(api)
+
+
+# ---------------------------------------------------------------- frontend (SPA)
+# When a production frontend build is available (the all-in-one Docker image, or
+# a local `npm run build`), serve it from the same origin as the API. The SPA
+# then calls the relative "/api" path, so no CORS setup and no build-time
+# backend URL are needed — see docs/DEPLOYMENT.md.
+FRONTEND_BUILD_DIR = Path(
+    os.environ.get("FRONTEND_BUILD_DIR", ROOT_DIR.parent / "frontend" / "build")
+)
+
+
+class ImmutableStaticFiles(StaticFiles):
+    """CRA asset filenames are content-hashed, so they can be cached forever."""
+
+    async def get_response(self, path: str, scope):
+        response = await super().get_response(path, scope)
+        if response.status_code == 200:
+            response.headers.setdefault("Cache-Control", "public, max-age=31536000, immutable")
+        return response
+
+
+if FRONTEND_BUILD_DIR.is_dir():
+    logger.info("serving frontend build from %s", FRONTEND_BUILD_DIR)
+    _assets_dir = FRONTEND_BUILD_DIR / "static"
+    if _assets_dir.is_dir():
+        app.mount("/static", ImmutableStaticFiles(directory=str(_assets_dir)), name="static")
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def spa(full_path: str):
+        # Unknown API routes must stay JSON 404s rather than returning the SPA
+        # shell, otherwise client bugs turn into confusing HTML responses.
+        if full_path == "api" or full_path.startswith("api/"):
+            raise HTTPException(status_code=404, detail="Not found")
+        root = FRONTEND_BUILD_DIR.resolve()
+        if full_path:
+            candidate = (root / full_path).resolve()
+            # `is_relative_to` guards against path traversal (e.g. /../../etc/passwd).
+            if candidate.is_relative_to(root) and candidate.is_file():
+                return FileResponse(candidate)
+        index = root / "index.html"
+        if index.is_file():
+            # index.html references hashed assets, so it must never be cached.
+            return FileResponse(index, headers={"Cache-Control": "no-cache"})
+        raise HTTPException(status_code=404, detail="Frontend build not found")
+else:
+    logger.info("no frontend build at %s — API-only mode", FRONTEND_BUILD_DIR)
+
 
 @app.on_event("startup")
 async def startup():
+    secret = os.environ.get("JWT_SECRET", "")
+    if len(secret) < 32:
+        # PyJWT already warns; this makes the cause obvious in deployment logs.
+        logger.warning(
+            "JWT_SECRET is shorter than 32 characters — use a longer random value in production."
+        )
     try:
         await db.users.create_index("email", unique=True)
         await db.login_attempts.create_index("identifier")
+        # Expire stale lockout counters automatically (1 day after the last
+        # failed attempt) instead of keeping them forever.
+        await db.login_attempts.create_index("updated_at", expireAfterSeconds=86400)
     except Exception as e:
         logger.warning(f"index setup: {e}")
 

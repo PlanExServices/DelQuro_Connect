@@ -43,6 +43,18 @@
 - **Alpha Persona Switcher:** Zero-credential switching between **Alice Chen** (*Lead LVT*), **Marcus Green** (*Vet Tech*), **Sophia Taylor** (*Reception*), **Jordan Miller** (*Assistant*), **Cody Martinez** (*Practice Manager*), and **Dr. Eleanor Vance** (*Medical Director/Admin*).
 - **Practice Seeder & Reset:** Optional button to load realistic August 2026 practice data or reset to factory clean state.
 
+### Implementation status (read me first)
+
+The feature list above merges the DelQuro Connect build with the CAH Connect
+design spec, and a few of those items are **not implemented yet** in this
+codebase: the in-app practice seeder/reset, the alpha persona switcher, and
+shift-based time off (AM/PM/Night/Custom hours) — time off is currently
+requested per full day. Chat channels are user-created (the demo seed adds
+`#general`, `#vet-techs`, `#doctors-dvm`, `#front-desk`); they are not
+hard-coded. Everything else (Huddle, Time Off capacity engine, retained master
+schedules, roster/locations, roles, invites, chat, kudos/achievements) is
+implemented in `backend/server.py` + `frontend/src`.
+
 ---
 
 ## 🏗 Architecture
@@ -73,24 +85,105 @@
 - `react-day-picker` (calendar), `date-fns`
 
 ### Backend
-- FastAPI 0.110.1, Uvicorn 0.25.0
+- FastAPI 0.110.1, Uvicorn 0.25.0 (+ `websockets` for the chat WebSocket)
 - MongoDB (motor 3.3.1) + `pymongo`
-- JWT (`pyjwt` + `python-jose`), bcrypt (`bcrypt`), `python-dotenv`
-- CORS middleware, file upload via FormData
+- JWT (`pyjwt`), bcrypt (`bcrypt`), `python-dotenv`
+- CORS middleware, file upload via FormData, optional static hosting of the
+  built frontend (single-container deployment)
 
 ---
 
 ## 🚀 Running the App
 
-```bash
-# Backend
-python -m uvicorn backend.server:app --host 0.0.0.0 --port 8000
+### 1. Backend (FastAPI + MongoDB)
 
-# Frontend
-cd frontend && npm start
+```bash
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r backend/requirements.txt
+
+cp backend/.env.example backend/.env     # then edit MONGO_URL / DB_NAME / JWT_SECRET
+python -m uvicorn backend.server:app --host 0.0.0.0 --port 8000
 ```
 
-Set `MONGO_URL`, `DB_NAME`, `JWT_SECRET`, and `CORS_ORIGINS` in `backend/.env`.
+Required variables (see `backend/.env.example`): `MONGO_URL`, `DB_NAME`, `JWT_SECRET`.
+Optional: `CORS_ORIGINS`, `ADMIN_BOOTSTRAP_CODE`, `PORT`.
+
+**No MongoDB handy?** Run the same app on an in-memory MongoDB stand-in with
+demo data (development only):
+
+```bash
+pip install -r backend/requirements-dev.txt
+IN_MEMORY_DB=1 SEED_DEMO=1 python backend/dev_server.py
+# demo sign-in: eleanor@delquroconnect.com / Delquro2026 (all demo users share that password)
+```
+
+Health checks: `GET /health` (liveness, also `/api/health`) and
+`GET /health/ready` (also pings MongoDB, returns 503 when it is unreachable).
+
+### 2. Frontend (React + CRACO)
+
+```bash
+cd frontend
+npm install
+cp .env.example .env        # optional — see below
+npm start                   # http://localhost:3000
+```
+
+- With `REACT_APP_BACKEND_URL` empty, the app calls the relative `/api` path and
+  the dev server proxies it to `http://127.0.0.1:8000` (override with
+  `BACKEND_PROXY_TARGET`). Production builds can also be served same-origin
+  behind a reverse proxy that forwards `/api` to the backend.
+- Set `REACT_APP_BACKEND_URL=https://api.example.com` to talk to a backend on a
+  different host. `npm run build` emits a static bundle in `frontend/build`.
+
+### 3. Docker
+
+```bash
+# All-in-one image: builds the React app and serves it + the API from one port
+docker build -t delquro-connect .
+docker run -p 8000:8000 --env-file .env delquro-connect      # http://localhost:8000
+
+# ...or the pieces separately
+docker build -f Dockerfile.backend -t delquro-connect-api .   # API only (:8000)
+docker build -t delquro-connect-web ./frontend                # SPA + /api proxy (:80)
+
+# ...or the whole stack (MongoDB included)
+cp .env.example .env && docker compose up --build
+```
+
+Both images honour `$PORT` (default 8000) and ship a `/health` HEALTHCHECK.
+
+### 4. Deploy to Coolify
+
+Production deployment is documented step by step in
+**[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)**. Short version — one Coolify
+application plus a MongoDB resource:
+
+| Setting | Value |
+| :--- | :--- |
+| Build Pack | Dockerfile |
+| Base Directory | `/` |
+| Dockerfile Location | `/Dockerfile` |
+| Ports Exposes | `8000` |
+| Health check | HTTP, port `8000`, path `/health` |
+| Env vars | `MONGO_URL`, `DB_NAME`, `JWT_SECRET`, `ADMIN_BOOTSTRAP_CODE` |
+
+The container serves the SPA at `/` and the API at `/api` on the same origin, so
+no CORS setup or build-time backend URL is required. Create the first admin at
+`/setup` with `ADMIN_BOOTSTRAP_CODE`, then invite the team from Hospital Tools →
+Invitations. Prefer separate frontend/backend applications? Use
+`Dockerfile.backend` + `frontend/Dockerfile` — settings are in the deployment guide.
+
+### 5. Tests
+
+```bash
+# start a backend first (see above), then:
+cd backend && pytest tests/ -q                     # uses $BACKEND_URL or http://localhost:8000
+```
+
+The suites assume the seeded workspace described in `test_result.md`
+(`#general` chat, admin/manager/staff accounts) — `SEED_DEMO=1` creates a
+comparable set of data.
 
 ---
 

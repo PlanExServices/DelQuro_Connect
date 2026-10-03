@@ -1,6 +1,10 @@
 import axios from "axios";
 
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
+// Absolute backend URL when configured; otherwise fall back to the relative
+// "/api" path (same-origin deployments, and the dev server proxies it to the
+// local backend — see craco.config.js). Without this fallback a missing env
+// var silently produced calls to "undefined/api".
+const BACKEND_URL = (process.env.REACT_APP_BACKEND_URL || "").replace(/\/+$/, "");
 export const API = `${BACKEND_URL}/api`;
 
 const TOKEN_KEY = "delquro_token";
@@ -45,6 +49,10 @@ export function fileUrl(id) {
 }
 
 export function wsUrl(path) {
-  const base = API.replace(/^http/, "ws");
+  // WebSocket requires an absolute URL, so a relative API base (same-origin
+  // deployments) has to be expanded against the current page first.
+  const base = /^https?:\/\//.test(API)
+    ? API.replace(/^http/, "ws")
+    : `${window.location.protocol === "https:" ? "wss" : "ws"}://${window.location.host}${API}`;
   return `${base}${path}?token=${getToken()}`;
 }

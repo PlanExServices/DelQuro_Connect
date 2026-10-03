@@ -6,7 +6,7 @@ from datetime import datetime, timezone, timedelta
 import pytest
 import requests
 
-BASE_URL = os.environ.get("BACKEND_URL", "https://hospital-sync-15.preview.emergentagent.com").rstrip("/")
+BASE_URL = os.environ.get("BACKEND_URL", "http://localhost:8000").rstrip("/")
 API = f"{BASE_URL}/api"
 ADMIN_EMAIL = "planexservices@gmail.com"
 ADMIN_PASS = "Delquro2026"

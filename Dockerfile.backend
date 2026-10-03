@@ -1,0 +1,36 @@
+# DelQuro Connect — API-only image (for a split frontend/backend deployment).
+#
+# Build context is the REPOSITORY ROOT (so plain `docker build` works):
+#   docker build -f Dockerfile.backend -t delquro-connect-api .
+#   docker run -p 8000:8000 --env-file backend/.env delquro-connect-api
+#
+# In Coolify: Base Directory = / , Dockerfile Location = /Dockerfile.backend ,
+# Ports Exposes = 8000. Set CORS_ORIGINS to the frontend origin, and build the
+# frontend with REACT_APP_BACKEND_URL pointing at this service's public URL.
+#
+# Required runtime env: MONGO_URL, DB_NAME, JWT_SECRET
+# (optional: CORS_ORIGINS, ADMIN_BOOTSTRAP_CODE, PORT).
+
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Build tooling for dependencies without pre-built wheels on this architecture.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends gcc libffi-dev python3-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY backend/requirements.txt ./
+RUN pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir -r requirements.txt
+
+COPY backend/ ./
+
+ENV PORT=8000
+
+EXPOSE 8000
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+    CMD python -c "import os, urllib.request; urllib.request.urlopen('http://127.0.0.1:' + os.environ.get('PORT', '8000') + '/health', timeout=4)"
+
+CMD ["sh", "-c", "python -m uvicorn server:app --host 0.0.0.0 --port ${PORT:-8000}"]
