@@ -164,6 +164,16 @@ class TestHuddle:
 # ================== TIME OFF ==================
 class TestTimeOff:
     def test_staff_request_forces_pending(self, staff_token):
+        # The suite reuses a fixed date, and the API rejects a second request for
+        # the same person+date with 409, so clear any leftovers from a previous
+        # run first (keeps the suite runnable against a non-empty database).
+        me = requests.get(f"{API}/auth/me", headers=_h(staff_token), timeout=10).json()
+        existing = requests.get(f"{API}/timeoff", headers=_h(staff_token),
+                                params={"date": "2027-06-15"}, timeout=10).json()
+        for item in existing:
+            if item.get("user_id") == me["id"]:
+                requests.delete(f"{API}/timeoff/{item['id']}", headers=_h(staff_token), timeout=10)
+
         r = requests.post(f"{API}/timeoff", headers=_h(staff_token), json={
             "date": "2027-06-15", "reason": "TEST_ vacation", "status": "approved"
         }, timeout=10)
@@ -339,22 +349,37 @@ class TestAdmin:
                          params={"role": "staff"}, timeout=10)
         assert r.status_code == 400
 
-    def test_set_role_and_location(self, admin_token, staff_token):
-        staff_me = requests.get(f"{API}/auth/me", headers=_h(staff_token)).json()
-        # promote and revert
-        r = requests.put(f"{API}/team/{staff_me['id']}/role", headers=_h(admin_token),
-                         params={"role": "manager"}, timeout=10)
-        assert r.status_code == 200 and r.json()["role"] == "manager"
-        r2 = requests.put(f"{API}/team/{staff_me['id']}/role", headers=_h(admin_token),
-                          params={"role": "staff"}, timeout=10)
-        assert r2.status_code == 200 and r2.json()["role"] == "staff"
+    def test_set_role_and_location(self, admin_token):
+        # Promote/revert a throwaway account instead of the shared seeded staff
+        # user: the seeded account must stay "staff" for TestInvites, and
+        # pytest-xdist can run classes concurrently.
+        email = f"TEST_role_{uuid.uuid4().hex[:8]}@example.com"
+        inv = requests.post(f"{API}/invites", headers=_h(admin_token),
+                            json={"channel": "email", "value": email, "access": "staff"}, timeout=10)
+        assert inv.status_code == 200
+        reg = requests.post(f"{API}/auth/register", json={
+            "email": email, "password": "Vetteam1", "name": "Test Role User",
+            "code": inv.json()["code"]}, timeout=10)
+        assert reg.status_code == 200
+        uid = reg.json()["user"]["id"]
+        try:
+            # promote and revert
+            r = requests.put(f"{API}/team/{uid}/role", headers=_h(admin_token),
+                             params={"role": "manager"}, timeout=10)
+            assert r.status_code == 200 and r.json()["role"] == "manager"
+            r2 = requests.put(f"{API}/team/{uid}/role", headers=_h(admin_token),
+                              params={"role": "staff"}, timeout=10)
+            assert r2.status_code == 200 and r2.json()["role"] == "staff"
 
-        locs = requests.get(f"{API}/locations", headers=_h(admin_token)).json()
-        if locs:
-            lid = locs[0]["id"]
-            r3 = requests.put(f"{API}/team/{staff_me['id']}/location", headers=_h(admin_token),
-                              params={"location_id": lid}, timeout=10)
-            assert r3.status_code == 200
+            locs = requests.get(f"{API}/locations", headers=_h(admin_token)).json()
+            if locs:
+                r3 = requests.put(f"{API}/team/{uid}/location", headers=_h(admin_token),
+                                  params={"location_id": locs[0]["id"]}, timeout=10)
+                assert r3.status_code == 200
+        finally:
+            # remove the throwaway account so reruns start clean
+            requests.delete(f"{API}/me", headers=_h(reg.json()["access_token"]),
+                            json={"current_password": "Vetteam1"}, timeout=10)
 
 
 # ================== INVITES ==================

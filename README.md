@@ -85,10 +85,11 @@ implemented in `backend/server.py` + `frontend/src`.
 - `react-day-picker` (calendar), `date-fns`
 
 ### Backend
-- FastAPI 0.110.1, Uvicorn 0.25.0
+- FastAPI 0.110.1, Uvicorn 0.25.0 (+ `websockets` for the chat WebSocket)
 - MongoDB (motor 3.3.1) + `pymongo`
-- JWT (`pyjwt` + `python-jose`), bcrypt (`bcrypt`), `python-dotenv`
-- CORS middleware, file upload via FormData
+- JWT (`pyjwt`), bcrypt (`bcrypt`), `python-dotenv`
+- CORS middleware, file upload via FormData, optional static hosting of the
+  built frontend (single-container deployment)
 
 ---
 
@@ -116,7 +117,8 @@ IN_MEMORY_DB=1 SEED_DEMO=1 python backend/dev_server.py
 # demo sign-in: eleanor@delquroconnect.com / Delquro2026 (all demo users share that password)
 ```
 
-Health check: `GET /health` (also `/api/health`).
+Health checks: `GET /health` (liveness, also `/api/health`) and
+`GET /health/ready` (also pings MongoDB, returns 503 when it is unreachable).
 
 ### 2. Frontend (React + CRACO)
 
@@ -134,16 +136,45 @@ npm start                   # http://localhost:3000
 - Set `REACT_APP_BACKEND_URL=https://api.example.com` to talk to a backend on a
   different host. `npm run build` emits a static bundle in `frontend/build`.
 
-### 3. Docker (backend)
+### 3. Docker
 
 ```bash
-docker build -t delquro-connect-api .
-docker run -p 8000:8000 --env-file backend/.env delquro-connect-api
+# All-in-one image: builds the React app and serves it + the API from one port
+docker build -t delquro-connect .
+docker run -p 8000:8000 --env-file .env delquro-connect      # http://localhost:8000
+
+# ...or the pieces separately
+docker build -f Dockerfile.backend -t delquro-connect-api .   # API only (:8000)
+docker build -t delquro-connect-web ./frontend                # SPA + /api proxy (:80)
+
+# ...or the whole stack (MongoDB included)
+cp .env.example .env && docker compose up --build
 ```
 
-The image honours `$PORT` (defaults to 8000) and ships a `/health` HEALTHCHECK.
+Both images honour `$PORT` (default 8000) and ship a `/health` HEALTHCHECK.
 
-### 4. Tests
+### 4. Deploy to Coolify
+
+Production deployment is documented step by step in
+**[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)**. Short version — one Coolify
+application plus a MongoDB resource:
+
+| Setting | Value |
+| :--- | :--- |
+| Build Pack | Dockerfile |
+| Base Directory | `/` |
+| Dockerfile Location | `/Dockerfile` |
+| Ports Exposes | `8000` |
+| Health check | HTTP, port `8000`, path `/health` |
+| Env vars | `MONGO_URL`, `DB_NAME`, `JWT_SECRET`, `ADMIN_BOOTSTRAP_CODE` |
+
+The container serves the SPA at `/` and the API at `/api` on the same origin, so
+no CORS setup or build-time backend URL is required. Create the first admin at
+`/setup` with `ADMIN_BOOTSTRAP_CODE`, then invite the team from Hospital Tools →
+Invitations. Prefer separate frontend/backend applications? Use
+`Dockerfile.backend` + `frontend/Dockerfile` — settings are in the deployment guide.
+
+### 5. Tests
 
 ```bash
 # start a backend first (see above), then:

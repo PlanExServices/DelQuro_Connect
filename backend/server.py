@@ -1,6 +1,7 @@
 import os
 import json
 import logging
+import re
 import secrets
 import string
 from pathlib import Path
@@ -8,7 +9,8 @@ from datetime import datetime, timezone, timedelta, date as date_cls
 from typing import List, Optional
 
 from fastapi import FastAPI, APIRouter, HTTPException, Request, Depends, UploadFile, File, Form, WebSocket, WebSocketDisconnect
-from fastapi.responses import Response
+from fastapi.responses import FileResponse, Response
+from fastapi.staticfiles import StaticFiles
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -37,7 +39,10 @@ def require_env(name: str, default: Optional[str] = None) -> str:
 
 
 mongo_url = require_env("MONGO_URL")
-client = AsyncIOMotorClient(mongo_url)
+# Fail fast (5s) instead of hanging each request for motor's 30s default when
+# MongoDB is unreachable or MONGO_URL is wrong — deployment problems then show
+# up immediately in the logs and in /health/ready.
+client = AsyncIOMotorClient(mongo_url, serverSelectionTimeoutMS=5000)
 db = client[require_env("DB_NAME")]
 require_env("JWT_SECRET")  # auth.get_jwt_secret() reads the same variable
 
@@ -59,6 +64,24 @@ LOCKOUT_MINUTES = 15
 SYSTEM_DEFAULT_DAY_LIMIT = 2
 MIN_DAY_LIMIT = 0
 MAX_DAY_LIMIT = 8
+
+
+class NormalizePathMiddleware:
+    """Collapse duplicate slashes in request paths ("//api/x" → "/api/x").
+
+    Reverse proxies can produce double slashes (e.g. nginx `proxy_pass` when the
+    upstream URL ends with "/"). Without this, such requests miss every route
+    and return a confusing 404.
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") in ("http", "websocket") and "//" in scope.get("path", ""):
+            scope = dict(scope)
+            scope["path"] = re.sub(r"/{2,}", "/", scope["path"])
+        await self.app(scope, receive, send)
 
 
 def ensure_upload_size(content: bytes) -> None:
@@ -1271,23 +1294,54 @@ async def create_location(body: LocationBody, user: dict = Depends(require("mana
 
 
 # ---------------------------------------------------------------- health
+# /health is a pure liveness probe (fast, no I/O) — use it for the Coolify
+# health check. /health/ready additionally pings MongoDB, so a wrong MONGO_URL
+# or a stopped database is visible instead of silently serving 500s.
+async def _health_payload():
+    return {"status": "ok", "service": "delquro-connect"}
+
+
 @api.get("/health")
 async def api_health():
-    return {"status": "ok", "service": "delquro-connect"}
+    return await _health_payload()
+
+
+@api.get("/health/ready")
+async def api_health_ready():
+    try:
+        await db.command("ping")
+    except Exception as e:
+        logger.error("readiness check failed — MongoDB unreachable: %s", e)
+        raise HTTPException(
+            status_code=503,
+            detail={"status": "degraded", "database": "unreachable", "error": str(e)[:200]},
+        )
+    return {"status": "ok", "database": "ok", "service": "delquro-connect"}
 
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "service": "delquro-connect"}
+    return await _health_payload()
+
+
+@app.get("/health/ready")
+async def health_ready():
+    return await api_health_ready()
 
 
 # ---------------------------------------------------------------- bootstrap
 # Middleware is registered before the router is included (idiomatic Starlette
 # ordering) so every /api route — including future ones — goes through CORS.
+#
+# Note: browsers reject `Access-Control-Allow-Origin: *` together with
+# credentials, so credentials are only enabled for explicit origin lists. This
+# app authenticates with Bearer tokens (not cookies), so nothing is lost.
+cors_origins = [o.strip() for o in os.environ.get("CORS_ORIGINS", "*").split(",") if o.strip()]
+app.add_middleware(NormalizePathMiddleware)
 app.add_middleware(
     CORSMiddleware,
-    allow_credentials=True,
-    allow_origins=[o.strip() for o in os.environ.get("CORS_ORIGINS", "*").split(",") if o.strip()],
+    allow_origins=cors_origins,
+    allow_credentials="*" not in cors_origins,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -1295,8 +1349,61 @@ app.add_middleware(
 app.include_router(api)
 
 
+# ---------------------------------------------------------------- frontend (SPA)
+# When a production frontend build is available (the all-in-one Docker image, or
+# a local `npm run build`), serve it from the same origin as the API. The SPA
+# then calls the relative "/api" path, so no CORS setup and no build-time
+# backend URL are needed — see docs/DEPLOYMENT.md.
+FRONTEND_BUILD_DIR = Path(
+    os.environ.get("FRONTEND_BUILD_DIR", ROOT_DIR.parent / "frontend" / "build")
+)
+
+
+class ImmutableStaticFiles(StaticFiles):
+    """CRA asset filenames are content-hashed, so they can be cached forever."""
+
+    async def get_response(self, path: str, scope):
+        response = await super().get_response(path, scope)
+        if response.status_code == 200:
+            response.headers.setdefault("Cache-Control", "public, max-age=31536000, immutable")
+        return response
+
+
+if FRONTEND_BUILD_DIR.is_dir():
+    logger.info("serving frontend build from %s", FRONTEND_BUILD_DIR)
+    _assets_dir = FRONTEND_BUILD_DIR / "static"
+    if _assets_dir.is_dir():
+        app.mount("/static", ImmutableStaticFiles(directory=str(_assets_dir)), name="static")
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def spa(full_path: str):
+        # Unknown API routes must stay JSON 404s rather than returning the SPA
+        # shell, otherwise client bugs turn into confusing HTML responses.
+        if full_path == "api" or full_path.startswith("api/"):
+            raise HTTPException(status_code=404, detail="Not found")
+        root = FRONTEND_BUILD_DIR.resolve()
+        if full_path:
+            candidate = (root / full_path).resolve()
+            # `is_relative_to` guards against path traversal (e.g. /../../etc/passwd).
+            if candidate.is_relative_to(root) and candidate.is_file():
+                return FileResponse(candidate)
+        index = root / "index.html"
+        if index.is_file():
+            # index.html references hashed assets, so it must never be cached.
+            return FileResponse(index, headers={"Cache-Control": "no-cache"})
+        raise HTTPException(status_code=404, detail="Frontend build not found")
+else:
+    logger.info("no frontend build at %s — API-only mode", FRONTEND_BUILD_DIR)
+
+
 @app.on_event("startup")
 async def startup():
+    secret = os.environ.get("JWT_SECRET", "")
+    if len(secret) < 32:
+        # PyJWT already warns; this makes the cause obvious in deployment logs.
+        logger.warning(
+            "JWT_SECRET is shorter than 32 characters — use a longer random value in production."
+        )
     try:
         await db.users.create_index("email", unique=True)
         await db.login_attempts.create_index("identifier")

@@ -12,6 +12,10 @@
 fastapi==0.110.1
 uvicorn==0.25.0
 python-multipart>=0.0.9
+# Required for the realtime chat WebSocket (/api/ws/chat/{cid}). Without a WS
+# implementation uvicorn answers the upgrade request with 404 and live chat
+# silently degrades to polling.
+websockets>=12.0
 
 # --- database (MongoDB) ---
 motor==3.3.1

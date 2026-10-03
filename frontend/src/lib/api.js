@@ -49,6 +49,10 @@ export function fileUrl(id) {
 }
 
 export function wsUrl(path) {
-  const base = API.replace(/^http/, "ws");
+  // WebSocket requires an absolute URL, so a relative API base (same-origin
+  // deployments) has to be expanded against the current page first.
+  const base = /^https?:\/\//.test(API)
+    ? API.replace(/^http/, "ws")
+    : `${window.location.protocol === "https:" ? "wss" : "ws"}://${window.location.host}${API}`;
   return `${base}${path}?token=${getToken()}`;
 }

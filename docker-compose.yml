@@ -1,0 +1,41 @@
+# Local production-parity stack: MongoDB + the all-in-one app image.
+#
+#   cp .env.example .env      # then set JWT_SECRET (and optionally the rest)
+#   docker compose up --build
+#   open http://localhost:8000
+#
+# For the split frontend/backend topology see docs/DEPLOYMENT.md.
+
+services:
+  mongo:
+    image: mongo:7
+    restart: unless-stopped
+    volumes:
+      - mongo_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      mongo:
+        condition: service_healthy
+    environment:
+      MONGO_URL: mongodb://mongo:27017
+      DB_NAME: ${DB_NAME:-delquro_connect}
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env (32+ random characters)}
+      ADMIN_BOOTSTRAP_CODE: ${ADMIN_BOOTSTRAP_CODE:-DELQURO-SETUP-2026}
+      CORS_ORIGINS: ${CORS_ORIGINS:-*}
+      PORT: "8000"
+    ports:
+      - "${APP_PORT:-8000}:8000"
+
+volumes:
+  mongo_data:

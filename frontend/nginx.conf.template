@@ -1,0 +1,49 @@
+# DelQuro Connect — nginx config template (rendered by the official nginx image
+# entrypoint; ${BACKEND_URL} comes from the environment).
+
+server {
+    listen 80;
+    server_name _;
+
+    root /usr/share/nginx/html;
+    index index.html;
+
+    # Hashed CRA assets can be cached aggressively.
+    location /static/ {
+        expires 1y;
+        add_header Cache-Control "public, max-age=31536000, immutable";
+        try_files $uri =404;
+    }
+
+    # The SPA shell must never be cached, otherwise clients keep an old build.
+    location = /index.html {
+        add_header Cache-Control "no-cache";
+    }
+
+    # API + WebSocket proxy. Keeping the API on the same origin as the app means
+    # no CORS configuration and no build-time backend URL.
+    #
+    # $request_uri is appended explicitly so the path is forwarded unchanged no
+    # matter whether BACKEND_URL ends with a slash or not (a trailing slash
+    # would otherwise make nginx replace the /api/ prefix). The backend also
+    # collapses duplicate slashes, so either form works.
+    # e.g. BACKEND_URL=http://api:8000
+    location /api/ {
+        proxy_pass ${BACKEND_URL}$request_uri;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 300s;
+        proxy_send_timeout 300s;
+        client_max_body_size 25m;
+    }
+
+    # SPA deep links (/huddle, /timeoff, /schedule, ...) fall back to index.html.
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+}
