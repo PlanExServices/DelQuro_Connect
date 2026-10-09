@@ -38,6 +38,7 @@ export default function Huddle() {
   const [bdays, setBdays] = useState([]);
   const [annis, setAnnis] = useState([]);
   const [spotlight, setSpotlight] = useState(null);
+  const [pending, setPending] = useState([]);
   const [showNew, setShowNew] = useState(false);
   const [viewer, setViewer] = useState(null);
   const [commentsFor, setCommentsFor] = useState(null);
@@ -53,6 +54,8 @@ export default function Huddle() {
       ]);
       setPosts(p.data); setBdays(b.data); setAnnis(a.data); setSpotlight(s.data.spotlight);
     } catch (e) { setErr(apiError(e)); }
+    // Optional: the feed still loads if the protocol service fails.
+    api.get("/protocols/pending").then(({ data }) => setPending(data)).catch(() => setPending([]));
   }, []);
 
   useEffect(() => { load(); }, [load]);
@@ -98,22 +101,28 @@ export default function Huddle() {
         </div>
       )}
 
-      {/* Pinned clinical protocol banner per CAH spec */}
-      <div className="rounded-3xl p-5 mb-6 animate-fade-up" style={{ background: "linear-gradient(135deg, var(--burgundy) 0%, var(--burgundy-dark) 100%)", boxShadow: "0 4px 20px rgba(107,29,47,0.15)" }} data-testid="pinned-protocol-banner">
-        <div className="flex items-start gap-4">
-          <div className="grid place-items-center rounded-2xl shrink-0" style={{ width: 52, height: 52, background: "var(--gold)" }}>
-            <ShieldCheck size={26} color="#fff" />
-          </div>
-          <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-2 mb-1">
-              <span className="text-[10px] font-bold uppercase tracking-[0.15em] px-2 py-0.5 rounded-full text-white" style={{ background: "var(--gold)" }}>Pinned Protocol</span>
+      {/* Pinned protocol banner (CAH spec): protocols this teammate still has to sign */}
+      {pending.length > 0 && (
+        <button onClick={() => navigate(pending.length === 1 ? `/more/protocols/${pending[0].id}` : "/more/protocols")} className="block w-full text-left rounded-3xl p-5 mb-6 animate-fade-up" style={{ background: "linear-gradient(135deg, var(--burgundy) 0%, var(--burgundy-dark) 100%)", boxShadow: "0 4px 20px rgba(107,29,47,0.15)" }} data-testid="pinned-protocol-banner">
+          <div className="flex items-start gap-4">
+            <div className="grid place-items-center rounded-2xl shrink-0" style={{ width: 52, height: 52, background: "var(--gold)" }}>
+              <ShieldCheck size={26} color="#fff" />
             </div>
-            <h3 className="font-display text-xl text-white leading-snug mb-1">Surgical & Antibiotic Safety Protocols</h3>
-            <p className="text-sm text-white/80 leading-relaxed">Always confirm patient identity and chart before any procedure. Confirm antibiotic dosage with the on-call veterinarian. Mark as Read & Understood after review.</p>
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-2 mb-1">
+                <span className="text-[10px] font-bold uppercase tracking-[0.15em] px-2 py-0.5 rounded-full text-white" style={{ background: "var(--gold)" }}>
+                  {pending.length === 1 ? "Protocol to sign" : `${pending.length} protocols to sign`}
+                </span>
+              </div>
+              <h3 className="font-display text-xl text-white leading-snug mb-1">{pending[0].title}{pending.length > 1 ? ` and ${pending.length - 1} more` : ""}</h3>
+              <p className="text-sm text-white/80 leading-relaxed">
+                {pending[0].status === "expired" ? "Your sign-off is due for review." : pending[0].current_version > 1 ? `Updated to version ${pending[0].current_version}.` : "New protocol."} Tap to read and mark as Read & Understood.
+              </p>
+            </div>
+            <ChevronRight size={20} color="#fff" className="shrink-0 mt-1" />
           </div>
-        </div>
-      </div>
-
+        </button>
+      )}
 
       <div className="flex gap-4 mb-6">
         <MiniCard icon={Gift} title="Birthdays" items={bdays} empty="None in the next 4 weeks" testId="birthdays-card" onClick={() => navigate("/celebrations/birthdays")}

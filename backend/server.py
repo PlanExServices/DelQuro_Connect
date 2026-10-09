@@ -7,6 +7,8 @@ import string
 from pathlib import Path
 from datetime import datetime, timezone, timedelta, date as date_cls
 from typing import List, Optional
+import csv
+import io
 
 from fastapi import FastAPI, APIRouter, HTTPException, Request, Depends, UploadFile, File, Form, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, Response
@@ -94,7 +96,7 @@ def ensure_upload_size(content: bytes) -> None:
 # ---------------------------------------------------------------- permissions
 MANAGER_PERMS = [
     "post_huddle", "approve_timeoff", "manage_schedules", "set_daylimit",
-    "add_approved_timeoff", "invite", "admin_dashboard",
+    "add_approved_timeoff", "invite", "admin_dashboard", "manage_protocols",
 ]
 ADMIN_ONLY = ["manage_locations", "manage_roles"]
 ALL_PERMS = MANAGER_PERMS + ADMIN_ONLY
@@ -354,6 +356,44 @@ class InviteBody(BaseModel):
 class LocationBody(BaseModel):
     name: str
     campus_code: str
+
+
+PROTOCOL_CATEGORIES = [
+    "Surgery & Anesthesia", "Antimicrobial Stewardship", "Controlled Drugs",
+    "Infection Control", "Emergency & Triage", "Client Communication",
+    "Safety & Facilities", "Other",
+]
+
+
+class ProtocolBody(BaseModel):
+    title: str = Field(min_length=1, max_length=200)
+    category: str = "Other"
+    body: str = Field(min_length=1, max_length=50000)
+    # Job titles that must sign off; empty means every teammate.
+    audience: List[str] = []
+    # Re-acknowledgment interval in months (e.g. 12 for an annual review);
+    # None means a sign-off lasts until the next version is published.
+    review_months: Optional[int] = Field(default=None, ge=1, le=60)
+
+    @field_validator("category")
+    @classmethod
+    def known_category(cls, v):
+        if v not in PROTOCOL_CATEGORIES:
+            raise ValueError("Unknown protocol category")
+        return v
+
+    @field_validator("audience")
+    @classmethod
+    def known_titles(cls, v):
+        bad = [t for t in v if t not in JOB_TITLES]
+        if bad:
+            raise ValueError(f"Unknown job title(s): {', '.join(bad)}")
+        return sorted(set(v))
+
+
+class ProtocolVersionBody(BaseModel):
+    body: str = Field(min_length=1, max_length=50000)
+    change_note: str = Field(min_length=1, max_length=500)
 
 
 # ================================================================ AUTH ROUTES
@@ -1114,6 +1154,269 @@ async def mark_read(cid: str, user: dict = Depends(get_current_user)):
     return {"ok": True}
 
 
+# ================================================================ PROTOCOL LIBRARY
+# Versioned SOPs with per-version "Read & Understood" sign-offs. Publishing a
+# new version requires everyone in the audience to sign again, and an optional
+# review interval makes old sign-offs expire. Sign-offs are never deleted, so
+# the CSV export is a complete audit trail (e.g. for an AAHA evaluation).
+def oid_or_404(value: str, what: str = "Item") -> ObjectId:
+    try:
+        return ObjectId(value)
+    except Exception:
+        raise HTTPException(status_code=404, detail=f"{what} not found")
+
+
+def in_audience(protocol: dict, user: dict) -> bool:
+    audience = protocol.get("audience") or []
+    return not audience or user.get("job_title") in audience
+
+
+def signoff_state(protocol: dict, ack: Optional[dict]) -> str:
+    """'current', 'expired' (review interval passed) or 'needed'."""
+    if not ack:
+        return "needed"
+    months = protocol.get("review_months")
+    if months:
+        signed = datetime.fromisoformat(ack["acknowledged_at"])
+        if datetime.now(timezone.utc) - signed > timedelta(days=round(months * 30.44)):
+            return "expired"
+    return "current"
+
+
+async def latest_ack(pid: str, version: int, uid: str) -> Optional[dict]:
+    return await db.protocol_acks.find_one(
+        {"protocol_id": pid, "version": version, "user_id": uid},
+        sort=[("acknowledged_at", -1)],
+    )
+
+
+async def audience_members(protocol: dict) -> list:
+    audience = protocol.get("audience") or []
+    query = {"job_title": {"$in": audience}} if audience else {}
+    return await db.users.find(query, {"name": 1, "initials": 1, "job_title": 1}).to_list(5000)
+
+
+async def serialize_protocol(p: dict, user: dict, manager: bool) -> dict:
+    pid = str(p["_id"])
+    version = p.get("current_version", 1)
+    ack = await latest_ack(pid, version, str(user["_id"]))
+    out = {
+        "id": pid,
+        "title": p.get("title"),
+        "category": p.get("category"),
+        "audience": p.get("audience") or [],
+        "review_months": p.get("review_months"),
+        "current_version": version,
+        "updated_at": p.get("updated_at"),
+        "archived": p.get("archived", False),
+        "applies_to_me": in_audience(p, user),
+        "my_status": signoff_state(p, ack) if in_audience(p, user) else None,
+        "my_signed_at": ack.get("acknowledged_at") if ack else None,
+    }
+    if manager:
+        members = await audience_members(p)
+        signed = 0
+        for m in members:
+            if signoff_state(p, await latest_ack(pid, version, str(m["_id"]))) == "current":
+                signed += 1
+        out["signed_count"] = signed
+        out["audience_count"] = len(members)
+    return out
+
+
+async def get_protocol_or_404(pid: str) -> dict:
+    p = await db.protocols.find_one({"_id": oid_or_404(pid, "Protocol")})
+    if not p:
+        raise HTTPException(status_code=404, detail="Protocol not found")
+    return p
+
+
+@api.get("/meta/protocol-categories")
+async def protocol_categories(user: dict = Depends(get_current_user)):
+    return PROTOCOL_CATEGORIES
+
+
+@api.get("/protocols")
+async def list_protocols(include_archived: bool = False, user: dict = Depends(get_current_user)):
+    manager = compute_permissions(user.get("role", "staff")).get("manage_protocols", False)
+    query = {} if (manager and include_archived) else {"archived": {"$ne": True}}
+    items = await db.protocols.find(query).sort("title", 1).to_list(1000)
+    if not manager:
+        items = [p for p in items if in_audience(p, user)]
+    return [await serialize_protocol(p, user, manager) for p in items]
+
+
+@api.get("/protocols/pending")
+async def pending_protocols(user: dict = Depends(get_current_user)):
+    """Protocols the signed-in user still has to sign (drives the Huddle banner)."""
+    items = await db.protocols.find({"archived": {"$ne": True}}).sort("title", 1).to_list(1000)
+    pending = []
+    for p in items:
+        if not in_audience(p, user):
+            continue
+        ack = await latest_ack(str(p["_id"]), p.get("current_version", 1), str(user["_id"]))
+        state = signoff_state(p, ack)
+        if state != "current":
+            pending.append({"id": str(p["_id"]), "title": p.get("title"),
+                            "current_version": p.get("current_version", 1), "status": state})
+    return pending
+
+
+@api.post("/protocols")
+async def create_protocol(body: ProtocolBody, user: dict = Depends(require("manage_protocols"))):
+    now = now_iso()
+    doc = {
+        "title": body.title.strip(),
+        "category": body.category,
+        "audience": body.audience,
+        "review_months": body.review_months,
+        "current_version": 1,
+        "archived": False,
+        "created_by": str(user["_id"]),
+        "created_at": now,
+        "updated_at": now,
+    }
+    res = await db.protocols.insert_one(doc)
+    doc["_id"] = res.inserted_id
+    await db.protocol_versions.insert_one({
+        "protocol_id": str(res.inserted_id), "version": 1, "body": body.body,
+        "change_note": "First version", "published_by": str(user["_id"]),
+        "published_by_name": user.get("name"), "published_at": now,
+    })
+    return await serialize_protocol(doc, user, True)
+
+
+@api.get("/protocols/export.csv")
+async def export_protocol_signoffs(user: dict = Depends(require("manage_protocols"))):
+    """Every published version and every sign-off, one row each, for auditors."""
+    def cell(v):
+        v = "" if v is None else str(v)
+        # Neutralise spreadsheet formulas (CSV injection).
+        return "'" + v if v[:1] in ("=", "+", "-", "@", "\t", "\r") else v
+
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(["Protocol", "Category", "Version", "Version published", "Change note",
+                "Staff member", "Job title", "Signed at", "Sign-off status"])
+    protocols = await db.protocols.find().sort("title", 1).to_list(1000)
+    for p in protocols:
+        pid = str(p["_id"])
+        current = p.get("current_version", 1)
+        versions = await db.protocol_versions.find({"protocol_id": pid}).sort("version", 1).to_list(1000)
+        for v in versions:
+            acks = await db.protocol_acks.find(
+                {"protocol_id": pid, "version": v["version"]}).sort("acknowledged_at", 1).to_list(5000)
+            base = [p.get("title"), p.get("category"), v["version"], v.get("published_at"), v.get("change_note")]
+            if not acks:
+                w.writerow([cell(x) for x in base + ["", "", "", "no sign-offs"]])
+            for a in acks:
+                if v["version"] != current:
+                    status = "superseded"
+                else:
+                    status = signoff_state(p, a)
+                w.writerow([cell(x) for x in base + [a.get("name"), a.get("job_title"), a.get("acknowledged_at"), status]])
+        # Audience members with no sign-off on the current version.
+        if not p.get("archived"):
+            for m in await audience_members(p):
+                if not await latest_ack(pid, current, str(m["_id"])):
+                    w.writerow([cell(x) for x in [p.get("title"), p.get("category"), current, "", "",
+                                                  m.get("name"), m.get("job_title"), "", "not signed"]])
+    filename = f"protocol-signoffs-{datetime.now(timezone.utc).date().isoformat()}.csv"
+    return Response(content=buf.getvalue(), media_type="text/csv",
+                    headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+
+
+@api.get("/protocols/{pid}")
+async def get_protocol(pid: str, user: dict = Depends(get_current_user)):
+    p = await get_protocol_or_404(pid)
+    manager = compute_permissions(user.get("role", "staff")).get("manage_protocols", False)
+    if not manager and (p.get("archived") or not in_audience(p, user)):
+        raise HTTPException(status_code=404, detail="Protocol not found")
+    out = await serialize_protocol(p, user, manager)
+    versions = await db.protocol_versions.find({"protocol_id": pid}).sort("version", -1).to_list(1000)
+    current = next((v for v in versions if v["version"] == out["current_version"]), None)
+    out["body"] = current.get("body") if current else ""
+    out["versions"] = [{
+        "version": v["version"], "change_note": v.get("change_note"),
+        "published_at": v.get("published_at"), "published_by_name": v.get("published_by_name"),
+    } for v in versions]
+    return out
+
+
+@api.put("/protocols/{pid}")
+async def update_protocol_settings(pid: str, body: ProtocolBody, user: dict = Depends(require("manage_protocols"))):
+    """Change title, category, audience or review interval. Text changes go
+    through /versions so existing sign-offs are never silently invalidated."""
+    p = await get_protocol_or_404(pid)
+    await db.protocols.update_one({"_id": p["_id"]}, {"$set": {
+        "title": body.title.strip(), "category": body.category, "audience": body.audience,
+        "review_months": body.review_months, "updated_at": now_iso(),
+    }})
+    return await serialize_protocol(await get_protocol_or_404(pid), user, True)
+
+
+@api.post("/protocols/{pid}/versions")
+async def publish_protocol_version(pid: str, body: ProtocolVersionBody, user: dict = Depends(require("manage_protocols"))):
+    p = await get_protocol_or_404(pid)
+    if p.get("archived"):
+        raise HTTPException(status_code=400, detail="Restore this protocol before publishing a new version")
+    version = p.get("current_version", 1) + 1
+    now = now_iso()
+    await db.protocol_versions.insert_one({
+        "protocol_id": pid, "version": version, "body": body.body,
+        "change_note": body.change_note.strip(), "published_by": str(user["_id"]),
+        "published_by_name": user.get("name"), "published_at": now,
+    })
+    await db.protocols.update_one({"_id": p["_id"]}, {"$set": {"current_version": version, "updated_at": now}})
+    return await serialize_protocol(await get_protocol_or_404(pid), user, True)
+
+
+@api.post("/protocols/{pid}/acknowledge")
+async def acknowledge_protocol(pid: str, version: int, user: dict = Depends(get_current_user)):
+    """Sign the current version. The client sends the version it displayed, so
+    nobody signs text that changed while they were reading it."""
+    p = await get_protocol_or_404(pid)
+    if p.get("archived") or not in_audience(p, user):
+        raise HTTPException(status_code=404, detail="Protocol not found")
+    current = p.get("current_version", 1)
+    if version != current:
+        raise HTTPException(status_code=409, detail="This protocol was updated while you were reading. Please review the new version.")
+    uid = str(user["_id"])
+    if signoff_state(p, await latest_ack(pid, current, uid)) != "current":
+        await db.protocol_acks.insert_one({
+            "protocol_id": pid, "version": current, "user_id": uid,
+            "name": user.get("name"), "job_title": user.get("job_title"),
+            "acknowledged_at": now_iso(),
+        })
+    return await serialize_protocol(p, user, False)
+
+
+@api.get("/protocols/{pid}/signoffs")
+async def protocol_signoffs(pid: str, user: dict = Depends(require("manage_protocols"))):
+    """Who in the audience has signed the current version, and who hasn't."""
+    p = await get_protocol_or_404(pid)
+    current = p.get("current_version", 1)
+    rows = []
+    for m in await audience_members(p):
+        ack = await latest_ack(pid, current, str(m["_id"]))
+        rows.append({
+            "user_id": str(m["_id"]), "name": m.get("name"), "initials": m.get("initials"),
+            "job_title": m.get("job_title"), "status": signoff_state(p, ack),
+            "signed_at": ack.get("acknowledged_at") if ack else None,
+        })
+    order = {"needed": 0, "expired": 1, "current": 2}
+    rows.sort(key=lambda r: (order[r["status"]], r["name"] or ""))
+    return {"version": current, "members": rows}
+
+
+@api.post("/protocols/{pid}/archive")
+async def archive_protocol(pid: str, archived: bool = True, user: dict = Depends(require("manage_protocols"))):
+    """Retire (or restore) a protocol. History and sign-offs are kept."""
+    p = await get_protocol_or_404(pid)
+    await db.protocols.update_one({"_id": p["_id"]}, {"$set": {"archived": archived, "updated_at": now_iso()}})
+    return await serialize_protocol(await get_protocol_or_404(pid), user, True)
+
+
 # ================================================================ KNOWLEDGE / KUDOS / ADMIN
 @api.get("/knowledge/hospital_rules")
 async def hospital_rules(user: dict = Depends(get_current_user)):
@@ -1410,6 +1713,8 @@ async def startup():
         # Expire stale lockout counters automatically (1 day after the last
         # failed attempt) instead of keeping them forever.
         await db.login_attempts.create_index("updated_at", expireAfterSeconds=86400)
+        await db.protocol_versions.create_index([("protocol_id", 1), ("version", 1)], unique=True)
+        await db.protocol_acks.create_index([("protocol_id", 1), ("version", 1), ("user_id", 1)])
     except Exception as e:
         logger.warning(f"index setup: {e}")
 

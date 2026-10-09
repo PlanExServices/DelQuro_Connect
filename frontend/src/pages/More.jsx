@@ -1,5 +1,5 @@
 import { useNavigate } from "react-router-dom";
-import { ChevronRight, Grid, Users, Shield, MapPin, UserPlus, FileText, Award, MessageSquare } from "lucide-react";
+import { ChevronRight, Grid, Users, Shield, MapPin, UserPlus, FileText, Award, MessageSquare, ShieldCheck } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 import { Avatar } from "@/components/Avatar";
 import { PageHeader, Card, RoleChip } from "@/components/kit";
@@ -61,6 +61,7 @@ export default function More() {
       )}
 
       <Section title="Hospital Tools">
+        <Tile icon={ShieldCheck} label="Protocols & SOPs" tag="Sign-offs" onClick={() => navigate("/more/protocols")} testId="tile-protocols" />
         <Tile icon={FileText} label="Hospital Rules" onClick={() => navigate("/more/knowledge/hospital_rules")} testId="tile-rules" />
         <Tile icon={Award} label="Staff Achievements" onClick={() => navigate("/more/achievements")} testId="tile-achievements" />
       </Section>
