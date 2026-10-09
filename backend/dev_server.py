@@ -108,6 +108,28 @@ async def seed_demo() -> None:
         "image_id": None, "likes": [], "created_at": now.isoformat(),
     })
 
+    protocol = {
+        "title": "Surgical & Antibiotic Safety", "category": "Surgery & Anesthesia",
+        "audience": ["Veterinarian", "Veterinary Technician", "Vet Assistant"],
+        "review_months": 12, "current_version": 1, "archived": False,
+        "created_by": ids["Eleanor Vance"], "created_at": now.isoformat(), "updated_at": now.isoformat(),
+    }
+    protocol_id = str((await db.protocols.insert_one(protocol)).inserted_id)
+    await db.protocol_versions.insert_one({
+        "protocol_id": protocol_id, "version": 1,
+        "body": "1. Confirm patient identity and chart before any procedure.\n"
+                "2. Complete the surgical safety checklist at induction, before incision and before recovery.\n"
+                "3. Confirm antibiotic choice and dose with the on-call veterinarian; check culture results "
+                "before starting broad-spectrum antibiotics.\n"
+                "4. Never leave a sedated patient unattended.",
+        "change_note": "First version", "published_by": ids["Eleanor Vance"],
+        "published_by_name": "Eleanor Vance", "published_at": now.isoformat(),
+    })
+    await db.protocol_acks.insert_one({
+        "protocol_id": protocol_id, "version": 1, "user_id": ids["Alice Chen"],
+        "name": "Alice Chen", "job_title": "Veterinary Technician", "acknowledged_at": now.isoformat(),
+    })
+
     chat = {
         "name": "general", "description": "Hospital-wide chat", "access": "staff",
         "is_everyone": True, "member_ids": [],

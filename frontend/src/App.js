@@ -23,6 +23,8 @@ import Invitations from "@/pages/more/Invitations";
 import Location from "@/pages/more/Location";
 import Achievements from "@/pages/more/Achievements";
 import HospitalRules from "@/pages/more/HospitalRules";
+import Protocols from "@/pages/more/Protocols";
+import ProtocolDetail from "@/pages/more/ProtocolDetail";
 
 function FullScreenLoader() {
   return (
@@ -73,6 +75,8 @@ function App() {
               <Route path="/more/location" element={<Location />} />
               <Route path="/more/achievements" element={<Achievements />} />
               <Route path="/more/knowledge/hospital_rules" element={<HospitalRules />} />
+              <Route path="/more/protocols" element={<Protocols />} />
+              <Route path="/more/protocols/:id" element={<ProtocolDetail />} />
             </Route>
 
             <Route path="*" element={<Navigate to="/" replace />} />
