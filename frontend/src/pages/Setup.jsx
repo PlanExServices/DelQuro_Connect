@@ -76,7 +76,7 @@ export default function Setup() {
               <input data-testid="setup-password" type="password" className={inputCls} style={inputStyle} value={form.password} onChange={set("password")} required />
             </Field>
             <Field label="Setup code" hint="The one-time code from your administrator">
-              <input data-testid="setup-code" className={inputCls} style={inputStyle} value={form.bootstrap_code} onChange={set("bootstrap_code")} placeholder="DELQURO-SETUP-…" required />
+              <input data-testid="setup-code" className={inputCls} style={inputStyle} value={form.bootstrap_code} onChange={set("bootstrap_code")} placeholder="Your setup code" required />
             </Field>
             <Btn type="submit" disabled={busy} className="w-full mt-2" data-testid="setup-submit">
               {busy ? "Creating…" : "Create workspace"}

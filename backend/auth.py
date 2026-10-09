@@ -24,12 +24,24 @@ def verify_password(plain: str, hashed: str) -> bool:
         return False
 
 
-def create_access_token(user_id: str, email: str) -> str:
+# A throwaway bcrypt hash so a login for an unknown email costs the same time
+# as a real password check (otherwise response timing reveals which emails
+# have accounts).
+_DUMMY_HASH = bcrypt.hashpw(b"timing-equaliser", bcrypt.gensalt()).decode("utf-8")
+
+
+def burn_password_check(plain: str) -> None:
+    verify_password(plain, _DUMMY_HASH)
+
+
+def create_access_token(user_id: str, email: str, token_version: int = 0) -> str:
     payload = {
         "sub": user_id,
         "email": email,
         "exp": datetime.now(timezone.utc) + timedelta(days=TOKEN_TTL_DAYS),
         "type": "access",
+        # Bumped on password change so every token issued before it stops working.
+        "tv": token_version,
     }
     return jwt.encode(payload, get_jwt_secret(), algorithm=JWT_ALGORITHM)
 

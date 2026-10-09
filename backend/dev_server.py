@@ -44,7 +44,8 @@ if IN_MEMORY:
     os.environ.setdefault("MONGO_URL", "mongodb://localhost:27017")
     os.environ.setdefault("DB_NAME", "delquro_connect_dev")
     os.environ.setdefault("JWT_SECRET", "dev-only-in-memory-secret")
-    os.environ.setdefault("ADMIN_BOOTSTRAP_CODE", "DELQURO-SETUP-2026")
+    # In-memory dev only; the published production example code is refused.
+    os.environ.setdefault("ADMIN_BOOTSTRAP_CODE", "DEV-ONLY-SETUP")
 
 import server  # noqa: E402  (imported after the motor patch)
 from auth import hash_password  # noqa: E402

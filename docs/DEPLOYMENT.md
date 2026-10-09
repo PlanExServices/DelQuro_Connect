@@ -57,7 +57,7 @@ Add on the application's **Environment Variables** page (see `.env.example`):
 | `MONGO_URL` | the internal connection string from A1 (possibly `$DELQURO_DB` variable references) |
 | `DB_NAME` | `delquro_connect` |
 | `JWT_SECRET` | your `openssl rand -base64 48` value |
-| `ADMIN_BOOTSTRAP_CODE` | e.g. `DELQURO-SETUP-2026` — needed to create the first admin |
+| `ADMIN_BOOTSTRAP_CODE` | your own private value from `openssl rand -hex 16` — needed to create the first admin |
 | `CORS_ORIGINS` | leave unset (same origin) |
 | `PORT` | `8000` |
 
@@ -75,8 +75,9 @@ Add on the application's **Environment Variables** page (see `.env.example`):
 2. Create the first account with the `ADMIN_BOOTSTRAP_CODE` you set — that user
    becomes the **admin** (Medical Director role).
 3. Invite everyone else from **Hospital Tools → Invitations** (each invite code
-   carries a role and campus); self-registration without an invite is closed
-   once an admin exists.
+   carries a role and campus). Sign-up without an invite code is refused
+   unless `ALLOW_OPEN_REGISTRATION=true`. Only admins can create manager or
+   admin invites.
 4. Afterwards, rotate or delete `ADMIN_BOOTSTRAP_CODE` and redeploy (it is
    ignored once an admin exists, but there is no reason to keep it).
 
@@ -144,7 +145,8 @@ Backend: HTTP `8000` `/health`. Frontend: HTTP `80` `/`.
 | `MONGO_URL` | ✅ | — | MongoDB connection string |
 | `DB_NAME` | ✅ | — | Database name (e.g. `delquro_connect`) |
 | `JWT_SECRET` | ✅ | — | Signs session tokens; 32+ random chars; rotating it logs everyone out |
-| `ADMIN_BOOTSTRAP_CODE` | first run | — | Enables creating the first admin at `/setup` |
+| `ADMIN_BOOTSTRAP_CODE` | first run | — | Enables creating the first admin at `/setup`; must be a private value (the old published example is refused) |
+| `ALLOW_OPEN_REGISTRATION` | no | `false` | Allow sign-up without an invite code |
 | `CORS_ORIGINS` | split topology | `*` | Comma-separated allowed browser origins |
 | `PORT` | no | `8000` | Port uvicorn binds (keep in sync with Ports Exposes) |
 | `FRONTEND_BUILD_DIR` | no | `/app/frontend_build` in the all-in-one image | Where the SPA build lives; if missing, the API runs alone |
