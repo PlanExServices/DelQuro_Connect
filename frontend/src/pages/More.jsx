@@ -3,6 +3,7 @@ import { ChevronRight, Grid, Users, Shield, MapPin, UserPlus, FileText, Award, M
 import { useAuth } from "@/context/AuthContext";
 import { Avatar } from "@/components/Avatar";
 import { PageHeader, Card, RoleChip } from "@/components/kit";
+import { ClipboardList } from "lucide-react";
 
 function Tile({ icon: Icon, label, tag, onClick, testId }) {
   return (
@@ -66,6 +67,7 @@ export default function More() {
       </Section>
 
       <Section title="Shift Chat">
+        <Tile icon={ClipboardList} label="Shift Handoff" tag="SBAR cards" onClick={() => navigate("/handoffs")} testId="tile-handoffs" />
         <Tile icon={MessageSquare} label="Team Channels" tag="#general · #vet-techs · #doctors-dvm" onClick={() => navigate("/chat")} testId="tile-chat" />
       </Section>
     </>

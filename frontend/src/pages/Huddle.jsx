@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
-import { Plus, Heart, MessageCircle, Trash2, Camera, Image as ImageIcon, X, Gift, Award, MessageCircle as MC, Send, Zap, ChevronRight, ShieldCheck } from "lucide-react";
+import { Plus, Heart, MessageCircle, Trash2, Camera, Image as ImageIcon, X, Gift, Award, MessageCircle as MC, Send, Zap, ChevronRight, ShieldCheck, ClipboardList } from "lucide-react";
 import { api, apiError, fileUrl } from "@/lib/api";
 import { relativeTime } from "@/lib/format";
 import { useAuth } from "@/context/AuthContext";
@@ -41,6 +41,11 @@ export default function Huddle() {
   const [showNew, setShowNew] = useState(false);
   const [viewer, setViewer] = useState(null);
   const [commentsFor, setCommentsFor] = useState(null);
+  const [handoffs, setHandoffs] = useState(null);
+
+  useEffect(() => {
+    api.get("/handoffs/summary").then(({ data }) => setHandoffs(data)).catch(() => setHandoffs(null));
+  }, []);
 
   const load = useCallback(async () => {
     setErr(null);
@@ -133,6 +138,23 @@ export default function Huddle() {
             </div>
           )} />
       </div>
+
+      {handoffs?.open > 0 && (
+        <Card onClick={() => navigate("/handoffs")} className="p-4 mb-6 flex items-center gap-3 cursor-pointer hover:card-shadow-lg transition-shadow" data-testid="handoff-strip">
+          <div className="grid place-items-center rounded-xl shrink-0" style={{ width: 40, height: 40, background: handoffs.critical ? "var(--burgundy)" : "var(--brand)" }}>
+            <ClipboardList size={20} color="#fff" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <p className="font-display text-lg leading-tight" style={{ color: "var(--brand)" }}>
+              {handoffs.open} open handoff{handoffs.open === 1 ? "" : "s"}{handoffs.critical ? ` · ${handoffs.critical} critical` : ""}
+            </p>
+            <p className="text-xs" style={{ color: "var(--text-muted)" }}>
+              {handoffs.unreceived ? `${handoffs.unreceived} you haven't marked as received` : "You're up to date"}
+            </p>
+          </div>
+          <ChevronRight size={18} color="var(--text-muted)" />
+        </Card>
+      )}
 
       {err ? <ErrorState message={err} onRetry={load} />
         : posts === null ? <Loading />

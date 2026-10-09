@@ -1279,6 +1279,186 @@ async def delete_invite(iid: str, user: dict = Depends(require("invite"))):
     return {"ok": True}
 
 
+# ================================================================ SHIFT HANDOFFS
+# Structured (SBAR) handoff cards that carry hospitalized patients, pending
+# callbacks, owner updates and equipment issues across staggered shifts. Cards
+# stay open until someone resolves them; incoming staff mark them received so
+# the outgoing shift can see the handoff landed.
+HANDOFF_KINDS = ["patient", "callback", "owner_update", "equipment", "other"]
+HANDOFF_PRIORITIES = ["routine", "watch", "critical"]
+HANDOFF_SHIFTS = ["AM", "PM", "Overnight"]
+
+
+class HandoffBody(BaseModel):
+    kind: str = "patient"
+    priority: str = "routine"
+    shift: str = "AM"
+    title: str = Field(min_length=1, max_length=200)  # patient / client / item name
+    location: Optional[str] = Field(default=None, max_length=100)  # ward, kennel, room
+    situation: str = Field(min_length=1, max_length=2000)
+    background: Optional[str] = Field(default=None, max_length=4000)
+    assessment: Optional[str] = Field(default=None, max_length=4000)
+    recommendation: Optional[str] = Field(default=None, max_length=4000)
+    due_at: Optional[str] = None  # e.g. "next meds 14:00" as ISO time or datetime
+
+    @field_validator("kind")
+    @classmethod
+    def known_kind(cls, v):
+        if v not in HANDOFF_KINDS:
+            raise ValueError("Unknown handoff type")
+        return v
+
+    @field_validator("priority")
+    @classmethod
+    def known_priority(cls, v):
+        if v not in HANDOFF_PRIORITIES:
+            raise ValueError("Unknown priority")
+        return v
+
+    @field_validator("shift")
+    @classmethod
+    def known_shift(cls, v):
+        if v not in HANDOFF_SHIFTS:
+            raise ValueError("Unknown shift")
+        return v
+
+
+class HandoffResolveBody(BaseModel):
+    note: Optional[str] = Field(default=None, max_length=1000)
+
+
+def serialize_handoff(h: dict, uid: str) -> dict:
+    received = h.get("received", [])
+    return {
+        "id": str(h["_id"]),
+        "kind": h.get("kind"), "priority": h.get("priority"), "shift": h.get("shift"),
+        "title": h.get("title"), "location": h.get("location"),
+        "situation": h.get("situation"), "background": h.get("background"),
+        "assessment": h.get("assessment"), "recommendation": h.get("recommendation"),
+        "due_at": h.get("due_at"),
+        "status": h.get("status", "open"),
+        "author_id": h.get("author_id"), "author_name": h.get("author_name"),
+        "author_initials": h.get("author_initials"),
+        "created_at": h.get("created_at"), "updated_at": h.get("updated_at"),
+        "received": received,
+        "received_by_me": any(r.get("user_id") == uid for r in received),
+        "resolved_by_name": h.get("resolved_by_name"), "resolved_at": h.get("resolved_at"),
+        "resolution_note": h.get("resolution_note"),
+    }
+
+
+async def get_handoff_or_404(hid: str) -> dict:
+    try:
+        h = await db.handoffs.find_one({"_id": ObjectId(hid)})
+    except Exception:
+        h = None
+    if not h:
+        raise HTTPException(status_code=404, detail="Handoff not found")
+    return h
+
+
+PRIORITY_ORDER = {"critical": 0, "watch": 1, "routine": 2}
+
+
+@api.get("/handoffs")
+async def list_handoffs(status: str = "open", hours: int = 24, user: dict = Depends(get_current_user)):
+    """Open cards (default, most urgent first), or cards resolved in the last `hours`."""
+    if status not in ("open", "resolved"):
+        raise HTTPException(status_code=400, detail="status must be open or resolved")
+    query = {"status": status}
+    if status == "resolved":
+        hours = max(1, min(hours, 24 * 31))
+        query["resolved_at"] = {"$gte": (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()}
+    items = await db.handoffs.find(query).sort("created_at", -1).to_list(500)
+    uid = str(user["_id"])
+    out = [serialize_handoff(h, uid) for h in items]
+    if status == "open":
+        out.sort(key=lambda h: PRIORITY_ORDER.get(h["priority"], 9))
+    return out
+
+
+@api.get("/handoffs/summary")
+async def handoff_summary(user: dict = Depends(get_current_user)):
+    """Counts for the Huddle strip: open cards, critical ones, and ones I haven't received."""
+    uid = str(user["_id"])
+    items = await db.handoffs.find({"status": "open"}, {"priority": 1, "received": 1, "author_id": 1}).to_list(500)
+    return {
+        "open": len(items),
+        "critical": sum(1 for h in items if h.get("priority") == "critical"),
+        "unreceived": sum(1 for h in items if h.get("author_id") != uid
+                          and not any(r.get("user_id") == uid for r in h.get("received", []))),
+    }
+
+
+@api.post("/handoffs")
+async def create_handoff(body: HandoffBody, user: dict = Depends(get_current_user)):
+    now = now_iso()
+    doc = {**body.model_dump(), "status": "open", "received": [],
+           "author_id": str(user["_id"]), "author_name": user.get("name"),
+           "author_initials": user.get("initials"), "created_at": now, "updated_at": now}
+    res = await db.handoffs.insert_one(doc)
+    doc["_id"] = res.inserted_id
+    return serialize_handoff(doc, str(user["_id"]))
+
+
+@api.put("/handoffs/{hid}")
+async def update_handoff(hid: str, body: HandoffBody, user: dict = Depends(get_current_user)):
+    """Any teammate can update an open card (the patient's status changes during
+    the shift). Earlier receipts are cleared so the next shift re-reads it."""
+    h = await get_handoff_or_404(hid)
+    if h.get("status") != "open":
+        raise HTTPException(status_code=400, detail="This handoff is already resolved")
+    await db.handoffs.update_one({"_id": h["_id"]}, {"$set": {
+        **body.model_dump(), "received": [], "updated_at": now_iso(),
+        "updated_by_name": user.get("name"),
+    }})
+    return serialize_handoff(await get_handoff_or_404(hid), str(user["_id"]))
+
+
+@api.post("/handoffs/{hid}/receive")
+async def receive_handoff(hid: str, user: dict = Depends(get_current_user)):
+    h = await get_handoff_or_404(hid)
+    uid = str(user["_id"])
+    if h.get("status") == "open" and not any(r.get("user_id") == uid for r in h.get("received", [])):
+        await db.handoffs.update_one({"_id": h["_id"]}, {"$push": {"received": {
+            "user_id": uid, "name": user.get("name"), "initials": user.get("initials"), "at": now_iso(),
+        }}})
+    return serialize_handoff(await get_handoff_or_404(hid), uid)
+
+
+@api.post("/handoffs/{hid}/resolve")
+async def resolve_handoff(hid: str, body: HandoffResolveBody, user: dict = Depends(get_current_user)):
+    h = await get_handoff_or_404(hid)
+    if h.get("status") != "open":
+        raise HTTPException(status_code=400, detail="This handoff is already resolved")
+    await db.handoffs.update_one({"_id": h["_id"]}, {"$set": {
+        "status": "resolved", "resolved_by": str(user["_id"]), "resolved_by_name": user.get("name"),
+        "resolved_at": now_iso(), "resolution_note": body.note,
+    }})
+    return serialize_handoff(await get_handoff_or_404(hid), str(user["_id"]))
+
+
+@api.post("/handoffs/{hid}/reopen")
+async def reopen_handoff(hid: str, user: dict = Depends(get_current_user)):
+    h = await get_handoff_or_404(hid)
+    await db.handoffs.update_one({"_id": h["_id"]}, {"$set": {
+        "status": "open", "received": [], "updated_at": now_iso(),
+        "resolved_by": None, "resolved_by_name": None, "resolved_at": None, "resolution_note": None,
+    }})
+    return serialize_handoff(await get_handoff_or_404(hid), str(user["_id"]))
+
+
+@api.delete("/handoffs/{hid}")
+async def delete_handoff(hid: str, user: dict = Depends(get_current_user)):
+    """Authors can delete a card entered by mistake; managers can delete any."""
+    h = await get_handoff_or_404(hid)
+    is_manager = user.get("role") in ("manager", "admin")
+    if h.get("author_id") != str(user["_id"]) and not is_manager:
+        raise HTTPException(status_code=403, detail="Only the author or a manager can delete a handoff")
+    await db.handoffs.delete_one({"_id": h["_id"]})
+    return {"ok": True}
+
+
 # ================================================================ LOCATIONS
 @api.get("/locations")
 async def list_locations(user: dict = Depends(get_current_user)):
