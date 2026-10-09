@@ -14,6 +14,7 @@ import Schedule from "@/pages/Schedule";
 import Chat from "@/pages/Chat";
 import ChatThread from "@/pages/ChatThread";
 import Celebrations from "@/pages/Celebrations";
+import Handoffs from "@/pages/Handoffs";
 import More from "@/pages/More";
 import Profile from "@/pages/Profile";
 import AdminDashboard from "@/pages/more/AdminDashboard";
@@ -64,6 +65,7 @@ function App() {
               <Route path="/chat" element={<Chat />} />
               <Route path="/chat/:id" element={<ChatThread />} />
               <Route path="/celebrations/:type" element={<Celebrations />} />
+              <Route path="/handoffs" element={<Handoffs />} />
               <Route path="/more" element={<More />} />
               <Route path="/profile" element={<Profile />} />
               <Route path="/more/admin" element={<AdminDashboard />} />

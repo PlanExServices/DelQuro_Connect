@@ -125,6 +125,23 @@ async def seed_demo() -> None:
         "image_id": None, "read_by": [ids["Marcus Green"]], "created_at": now.isoformat(),
     })
 
+    for card in (
+        {"kind": "patient", "priority": "critical", "shift": "Overnight", "title": "Biscuit (Labrador)",
+         "location": "ICU 2", "situation": "Day 2 post-op GDV, on fluids and lidocaine CRI.",
+         "background": "Surgery yesterday 17:00. Arrhythmia overnight, resolved by 04:00.",
+         "assessment": "Stable but watch ECG. Pain 1/4.",
+         "recommendation": "ECG check every 2 h; recheck lactate 10:00; call Dr. Vance if HR > 160."},
+        {"kind": "callback", "priority": "watch", "shift": "Overnight", "title": "Mrs. Patel (Luna, cat)",
+         "situation": "Owner asked for a call about bloodwork results.",
+         "recommendation": "Results are back in the chart; DVM to call before noon."},
+    ):
+        await db.handoffs.insert_one({
+            **card, "background": card.get("background"), "assessment": card.get("assessment"),
+            "location": card.get("location"), "due_at": None, "status": "open", "received": [],
+            "author_id": ids["Marcus Green"], "author_name": "Marcus Green", "author_initials": "MG",
+            "created_at": now.isoformat(), "updated_at": now.isoformat(),
+        })
+
     await db.timeoff.insert_one({
         "user_id": ids["Sophia Taylor"], "name": "Sophia Taylor", "initials": "ST",
         "date": today, "reason": "Family appointment", "status": "pending",
