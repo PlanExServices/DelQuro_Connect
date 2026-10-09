@@ -50,8 +50,8 @@ export default function Register() {
             <Field label="Password" hint="8+ characters, at least 1 letter & 1 number">
               <input data-testid="register-password" type="password" className={inputCls} style={inputStyle} value={form.password} onChange={set("password")} required />
             </Field>
-            <Field label="Invite code (optional)" hint="From your manager, for the right role & campus">
-              <input data-testid="register-code" className={inputCls} style={inputStyle} value={form.code} onChange={set("code")} placeholder="e.g. 7KQ2FX" />
+            <Field label="Invite code" hint="From your manager, for the right role & campus">
+              <input data-testid="register-code" className={inputCls} style={inputStyle} value={form.code} onChange={set("code")} placeholder="e.g. 7KQ2FXM4" required />
             </Field>
             <div className="grid grid-cols-2 gap-3">
               <Field label="Birthday (optional)" hint="Month & day only">

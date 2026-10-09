@@ -2,6 +2,7 @@ import os
 import json
 import logging
 import re
+import hmac
 import secrets
 import string
 from pathlib import Path
@@ -23,7 +24,7 @@ load_dotenv(ROOT_DIR / ".env")
 
 from auth import (
     hash_password, verify_password, create_access_token,
-    decode_token, token_from_request,
+    decode_token, token_from_request, burn_password_check,
 )
 
 def require_env(name: str, default: Optional[str] = None) -> str:
@@ -56,6 +57,14 @@ logger = logging.getLogger("delquro")
 # with a clear 413 instead of letting the insert blow up with a 500.
 MAX_UPLOAD_BYTES = 15 * 1024 * 1024
 
+# The setup code that used to be the default here is published in this public
+# repository, so it is refused even if someone sets it explicitly.
+PUBLISHED_BOOTSTRAP_CODES = {"DELQURO-SETUP-2026"}
+
+# Self-sign-up without an invite code lets anyone who finds the URL join the
+# workspace and read the staff directory, chats and schedules. Off by default.
+ALLOW_OPEN_REGISTRATION = os.environ.get("ALLOW_OPEN_REGISTRATION", "").lower() in ("1", "true", "yes")
+
 # Login brute-force protection
 LOCKOUT_ATTEMPTS = 5
 LOCKOUT_MINUTES = 15
@@ -82,6 +91,38 @@ class NormalizePathMiddleware:
             scope = dict(scope)
             scope["path"] = re.sub(r"/{2,}", "/", scope["path"])
         await self.app(scope, receive, send)
+
+
+class SecurityHeadersMiddleware:
+    """Baseline browser hardening headers on every HTTP response.
+
+    `Referrer-Policy: no-referrer` also keeps the `?token=` used by image and
+    WebSocket URLs from leaking to other sites through the Referer header.
+    """
+
+    HEADERS = [
+        (b"x-content-type-options", b"nosniff"),
+        (b"x-frame-options", b"DENY"),
+        (b"referrer-policy", b"no-referrer"),
+        (b"permissions-policy", b"camera=(), microphone=(), geolocation=()"),
+    ]
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") != "http":
+            await self.app(scope, receive, send)
+            return
+
+        async def send_with_headers(message):
+            if message["type"] == "http.response.start":
+                existing = {k.lower() for k, _ in message.get("headers", [])}
+                extra = [(k, v) for k, v in self.HEADERS if k not in existing]
+                message = {**message, "headers": list(message.get("headers", [])) + extra}
+            await send(message)
+
+        await self.app(scope, receive, send_with_headers)
 
 
 def ensure_upload_size(content: bytes) -> None:
@@ -200,7 +241,17 @@ async def get_current_user(request: Request) -> dict:
         raise HTTPException(status_code=401, detail="Invalid token")
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
+    if not token_is_current(payload, user):
+        raise HTTPException(status_code=401, detail="Session expired. Please sign in again.")
     return user
+
+
+def token_is_current(payload: dict, user: dict) -> bool:
+    return payload.get("tv", 0) == user.get("token_version", 0)
+
+
+def issue_token(user: dict) -> str:
+    return create_access_token(str(user["_id"]), user["email"], user.get("token_version", 0))
 
 
 def require(perm: str):
@@ -417,7 +468,13 @@ async def register(body: RegisterBody):
     if body.bootstrap_code:
         if any_admin is not None:
             raise HTTPException(status_code=400, detail="Workspace is already set up. Please sign in.")
-        if body.bootstrap_code != os.environ.get("ADMIN_BOOTSTRAP_CODE"):
+        expected = os.environ.get("ADMIN_BOOTSTRAP_CODE", "")
+        if not expected or expected in PUBLISHED_BOOTSTRAP_CODES:
+            raise HTTPException(
+                status_code=400,
+                detail="Setup is disabled until the server has its own ADMIN_BOOTSTRAP_CODE.",
+            )
+        if not hmac.compare_digest(body.bootstrap_code.encode("utf-8"), expected.encode("utf-8")):
             raise HTTPException(status_code=400, detail="Invalid setup code")
         role = "admin"
     elif body.code:
@@ -426,13 +483,20 @@ async def register(body: RegisterBody):
             raise HTTPException(status_code=400, detail="Invalid invite code")
         if invite.get("expires_at") and datetime.fromisoformat(invite["expires_at"]) < datetime.now(timezone.utc):
             raise HTTPException(status_code=400, detail="This invite code has expired")
-        if invite.get("used"):
+        # Claim the invite atomically so two sign-ups racing on one code
+        # cannot both succeed.
+        claimed = await db.invites.find_one_and_update(
+            {"_id": invite["_id"], "used": {"$ne": True}},
+            {"$set": {"used": True, "used_at": now_iso()}},
+        )
+        if not claimed:
             raise HTTPException(status_code=400, detail="This invite code has already been used")
         role = invite.get("access", "staff")
         campus = invite.get("campus") or campus
         job_title = invite.get("job_title") or job_title
         location_id = invite.get("location_id")
-        await db.invites.update_one({"_id": invite["_id"]}, {"$set": {"used": True, "used_at": now_iso()}})
+    elif not ALLOW_OPEN_REGISTRATION:
+        raise HTTPException(status_code=400, detail="An invite code from your manager is required to join")
 
     doc = {
         "email": email,
@@ -451,8 +515,7 @@ async def register(body: RegisterBody):
     }
     res = await db.users.insert_one(doc)
     doc["_id"] = res.inserted_id
-    token = create_access_token(str(res.inserted_id), email)
-    return {"access_token": token, "user": public_user(doc)}
+    return {"access_token": issue_token(doc), "user": public_user(doc)}
 
 
 @api.post("/auth/login")
@@ -461,12 +524,13 @@ async def login(body: LoginBody, request: Request):
     identifier = email
     await check_lockout(identifier)
     user = await db.users.find_one({"email": email})
+    if not user:
+        burn_password_check(body.password)
     if not user or not verify_password(body.password, user["password_hash"]):
         await register_fail(identifier)
         raise HTTPException(status_code=401, detail="Invalid email or password")
     await db.login_attempts.delete_one({"identifier": identifier})
-    token = create_access_token(str(user["_id"]), email)
-    return {"access_token": token, "user": public_user(user)}
+    return {"access_token": issue_token(user), "user": public_user(user)}
 
 
 @api.get("/auth/me")
@@ -520,8 +584,14 @@ async def update_prefs(body: PrefsBody, user: dict = Depends(get_current_user)):
 async def change_password(body: PasswordBody, user: dict = Depends(get_current_user)):
     if not verify_password(body.current_password, user["password_hash"]):
         raise HTTPException(status_code=400, detail="Current password is incorrect")
-    await db.users.update_one({"_id": user["_id"]}, {"$set": {"password_hash": hash_password(body.new_password)}})
-    return {"ok": True}
+    # Bumping token_version signs out every other device (including a stolen
+    # token); the caller gets a fresh token so this device stays signed in.
+    fresh = await db.users.find_one_and_update(
+        {"_id": user["_id"]},
+        {"$set": {"password_hash": hash_password(body.new_password)}, "$inc": {"token_version": 1}},
+        return_document=True,
+    )
+    return {"ok": True, "access_token": issue_token(fresh)}
 
 
 @api.delete("/me")
@@ -553,7 +623,20 @@ async def delete_me(body: DeleteMeBody, user: dict = Depends(get_current_user)):
 @api.get("/team/members")
 async def team_members(user: dict = Depends(get_current_user)):
     users = await db.users.find({}, {"email": 1, "name": 1, "initials": 1, "campus": 1, "role": 1, "job_title": 1, "birthday": 1, "start_date": 1, "location_id": 1, "kudos": 1, "preferences": 1}).to_list(1000)
-    return [public_user(u) for u in users]
+    out = []
+    for u in users:
+        pu = public_user(u)
+        if u["_id"] != user["_id"]:
+            # Respect the "hide my birthday / anniversary" settings in the
+            # directory too, not only on the celebrations lists.
+            prefs = u.get("preferences") or {}
+            if not prefs.get("show_birthday", True):
+                pu["birthday"] = None
+            if not prefs.get("show_anniversary", True):
+                pu["start_date"] = None
+            pu.pop("preferences", None)
+        out.append(pu)
+    return out
 
 
 @api.get("/team/birthdays")
@@ -918,6 +1001,20 @@ async def delete_schedule(sid: str, user: dict = Depends(require("manage_schedul
 
 
 # ================================================================ UPLOADS / FILES
+INLINE_SAFE_TYPES = {"image/png", "image/jpeg", "image/gif", "image/webp", "application/pdf"}
+
+
+async def get_user_for_token(token: str) -> dict:
+    payload = decode_token(token)
+    try:
+        user = await db.users.find_one({"_id": ObjectId(payload["sub"])})
+    except Exception:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    if not user or not token_is_current(payload, user):
+        raise HTTPException(status_code=401, detail="Invalid token")
+    return user
+
+
 @api.post("/upload")
 async def upload_file(file: UploadFile = File(...), user: dict = Depends(get_current_user)):
     content = await file.read()
@@ -937,14 +1034,32 @@ async def upload_file(file: UploadFile = File(...), user: dict = Depends(get_cur
 async def serve_file(fid: str, request: Request):
     # auth via bearer OR ?token=
     token = token_from_request(request)
-    decode_token(token)
+    await get_user_for_token(token)
     try:
         f = await db.files.find_one({"_id": ObjectId(fid)})
     except Exception:
         raise HTTPException(status_code=404, detail="File not found")
     if not f:
         raise HTTPException(status_code=404, detail="File not found")
-    return Response(content=bytes(f["content"]), media_type=f.get("content_type", "application/octet-stream"))
+    # The content type comes from the uploader. Serving an uploaded HTML or SVG
+    # file inline on the app's own origin would run its scripts with access to
+    # the signed-in user's session, so only plain images and PDFs are shown
+    # inline; everything else downloads, and the sandbox CSP blocks scripts.
+    content_type = f.get("content_type") or "application/octet-stream"
+    inline = content_type in INLINE_SAFE_TYPES
+    if not inline:
+        content_type = "application/octet-stream"
+    filename = re.sub(r'[^A-Za-z0-9._ -]', "_", f.get("file_name") or "file")
+    return Response(
+        content=bytes(f["content"]),
+        media_type=content_type,
+        headers={
+            "Content-Disposition": f'{"inline" if inline else "attachment"}; filename="{filename}"',
+            "Content-Security-Policy": "sandbox; default-src 'none'; img-src 'self'; style-src 'unsafe-inline'",
+            "X-Content-Type-Options": "nosniff",
+            "Cache-Control": "private, no-store",
+        },
+    )
 
 
 # ================================================================ CHAT
@@ -1077,10 +1192,9 @@ async def send_message(cid: str, body: MessageBody, user: dict = Depends(get_cur
 @api.websocket("/ws/chat/{cid}")
 async def ws_chat(websocket: WebSocket, cid: str, token: str = ""):
     try:
-        payload = decode_token(token)
-        user = await db.users.find_one({"_id": ObjectId(payload["sub"])})
+        user = await get_user_for_token(token)
         chat = await db.chats.find_one({"_id": ObjectId(cid)})
-        if not user or not chat or not can_access_chat(chat, user):
+        if not chat or not can_access_chat(chat, user):
             await websocket.close(code=1008)
             return
     except Exception:
@@ -1106,6 +1220,12 @@ async def ws_chat(websocket: WebSocket, cid: str, token: str = ""):
 
 @api.post("/chats/{cid}/read")
 async def mark_read(cid: str, user: dict = Depends(get_current_user)):
+    try:
+        c = await db.chats.find_one({"_id": ObjectId(cid)})
+    except Exception:
+        c = None
+    if not c or not can_access_chat(c, user):
+        raise HTTPException(status_code=403, detail="Not allowed")
     uid = str(user["_id"])
     await db.messages.update_many(
         {"chat_id": cid, "sender_id": {"$ne": uid}, "read_by": {"$ne": uid}},
@@ -1253,8 +1373,13 @@ async def list_invites(user: dict = Depends(require("invite"))):
 async def create_invite(body: InviteBody, user: dict = Depends(require("invite"))):
     if body.access not in ROLES:
         raise HTTPException(status_code=400, detail="Invalid access role")
+    # Inviting someone as a manager or admin hands out those permissions, so
+    # only admins (who can already change roles) may do it. Otherwise a
+    # manager could invite a second account of their own as admin.
+    if body.access != "staff" and not compute_permissions(user.get("role", "staff")).get("manage_roles"):
+        raise HTTPException(status_code=403, detail="Only an admin can invite managers or admins")
     doc = {
-        "code": gen_code(6),
+        "code": gen_code(8),
         "channel": body.channel,
         "value": body.value,
         "campus": body.campus,
@@ -1314,7 +1439,7 @@ async def api_health_ready():
         logger.error("readiness check failed — MongoDB unreachable: %s", e)
         raise HTTPException(
             status_code=503,
-            detail={"status": "degraded", "database": "unreachable", "error": str(e)[:200]},
+            detail={"status": "degraded", "database": "unreachable"},
         )
     return {"status": "ok", "database": "ok", "service": "delquro-connect"}
 
@@ -1337,6 +1462,7 @@ async def health_ready():
 # credentials, so credentials are only enabled for explicit origin lists. This
 # app authenticates with Bearer tokens (not cookies), so nothing is lost.
 cors_origins = [o.strip() for o in os.environ.get("CORS_ORIGINS", "*").split(",") if o.strip()]
+app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(NormalizePathMiddleware)
 app.add_middleware(
     CORSMiddleware,
@@ -1404,8 +1530,15 @@ async def startup():
         logger.warning(
             "JWT_SECRET is shorter than 32 characters — use a longer random value in production."
         )
+    code = os.environ.get("ADMIN_BOOTSTRAP_CODE", "")
+    if not code or code in PUBLISHED_BOOTSTRAP_CODES:
+        logger.warning(
+            "ADMIN_BOOTSTRAP_CODE is unset or is the published example — first-time admin "
+            "setup is disabled. Set a private random value (e.g. `openssl rand -hex 16`)."
+        )
     try:
         await db.users.create_index("email", unique=True)
+        await db.invites.create_index("code", unique=True)
         await db.login_attempts.create_index("identifier")
         # Expire stale lockout counters automatically (1 day after the last
         # failed attempt) instead of keeping them forever.

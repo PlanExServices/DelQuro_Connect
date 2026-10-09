@@ -6,6 +6,7 @@ import { BackHeader } from "@/components/BackHeader";
 import { Modal } from "@/components/Modal";
 import { Card, Btn, Field, inputCls, inputStyle, RoleChip } from "@/components/kit";
 import { Loading, EmptyState } from "@/components/States";
+import { useAuth } from "@/context/AuthContext";
 
 const ROLES = ["staff", "manager", "admin"];
 const CHANNELS = ["code", "email", "phone"];
@@ -58,6 +59,9 @@ export default function Invitations() {
 }
 
 function CreateInvite({ onClose, onDone }) {
+  const { user } = useAuth();
+  // Only admins can invite managers or admins (the API enforces this too).
+  const roles = user?.permissions?.manage_roles ? ROLES : ["staff"];
   const [access, setAccess] = useState("staff");
   const [channel, setChannel] = useState("code");
   const [value, setValue] = useState("");
@@ -79,7 +83,7 @@ function CreateInvite({ onClose, onDone }) {
       footer={<Btn onClick={submit} disabled={busy} className="w-full" data-testid="submit-invite">{busy ? "Creating…" : "Generate code"}</Btn>}>
       <Field label="Access role">
         <div className="flex gap-2">
-          {ROLES.map((r) => (
+          {roles.map((r) => (
             <button key={r} onClick={() => setAccess(r)} className="flex-1 py-2 rounded-full text-sm font-medium capitalize" style={{ background: access === r ? "var(--brand)" : "var(--surface-tertiary)", color: access === r ? "#fff" : "var(--brand)" }} data-testid={`invite-access-${r}`}>{r}</button>
           ))}
         </div>
