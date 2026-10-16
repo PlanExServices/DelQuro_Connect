@@ -8,7 +8,7 @@ import { useAuth } from "@/context/AuthContext";
 import { Avatar } from "@/components/Avatar";
 import { ImageViewer } from "@/components/ImageViewer";
 import { inputCls, inputStyle } from "@/components/kit";
-import { Loading } from "@/components/States";
+import { Loading, ErrorState } from "@/components/States";
 
 export default function ChatThread() {
   const { id } = useParams();
@@ -16,6 +16,7 @@ export default function ChatThread() {
   const navigate = useNavigate();
   const [chat, setChat] = useState(null);
   const [msgs, setMsgs] = useState(null);
+  const [error, setError] = useState(null);
   const [text, setText] = useState("");
   const [pending, setPending] = useState(null);
   const [viewer, setViewer] = useState(null);
@@ -35,10 +36,12 @@ export default function ChatThread() {
   const poll = useCallback(async () => {
     try {
       const { data } = await api.get(`/chats/${id}/messages`);
+      setError(null);
       setMsgs(data);
       api.post(`/chats/${id}/read`).catch(() => {});
     } catch (e) {
       if (e.response?.status === 403) { toast.error("You don't have access to this chat"); navigate("/chat"); }
+      else setError(apiError(e));
     }
   }, [id, navigate]);
 
@@ -87,7 +90,7 @@ export default function ChatThread() {
     if (!imageId && !body.text) return;
     setText("");
     try { await api.post(`/chats/${id}/messages`, body); poll(); }
-    catch (e) { toast.error(apiError(e)); }
+    catch (e) { if (!imageId) setText(body.text); toast.error(apiError(e)); }
   };
 
   const pickImage = async (e) => {
@@ -122,12 +125,12 @@ export default function ChatThread() {
   return (
     <div className="flex flex-col h-[calc(100vh-8rem)] lg:h-[calc(100vh-7rem)]">
       <div className="flex items-center gap-3 pb-4 mb-2 border-b" style={{ borderColor: "var(--divider)" }}>
-        <button onClick={() => navigate("/chat")} className="grid place-items-center rounded-full" style={{ width: 38, height: 38, background: "var(--surface-tertiary)" }} data-testid="chat-back"><ArrowLeft size={18} color="var(--brand)" /></button>
+        <button onClick={() => navigate("/chat")} aria-label="Back to chats" className="grid place-items-center rounded-full" style={{ width: 40, height: 40, background: "var(--surface-tertiary)" }} data-testid="chat-back"><ArrowLeft size={18} color="var(--brand)" /></button>
         <h1 className="font-display text-2xl" style={{ color: "var(--brand)" }}>{chat?.name || "Chat"}</h1>
       </div>
 
       <div className="flex-1 overflow-y-auto space-y-3 pr-1">
-        {msgs === null ? <Loading /> : msgs.length === 0 ? (
+        {error ? <ErrorState message={error} onRetry={poll} /> : msgs === null ? <Loading /> : msgs.length === 0 ? (
           <p className="text-sm text-center py-10" style={{ color: "var(--text-muted)" }}>No messages yet. Say hello!</p>
         ) : msgs.map((m) => {
           const mine = m.sender_id === user?.id;
@@ -135,7 +138,7 @@ export default function ChatThread() {
             <div key={m.id} className={`flex gap-2 ${mine ? "justify-end" : "justify-start"}`} data-testid="chat-message">
               {!mine && <Avatar initials={m.sender_initials} size={32} />}
               <div className={`max-w-[75%] ${mine ? "items-end" : "items-start"} flex flex-col`}>
-                {!mine && <span className="text-xs font-semibold mb-1 ml-1" style={{ color: "var(--teal)" }}>{m.sender_name}</span>}
+                {!mine && <span className="text-xs font-semibold mb-1 ml-1" style={{ color: "var(--teal-dark)" }}>{m.sender_name}</span>}
                 {m.image_id ? (
                   <img src={fileUrl(m.image_id)} alt="attachment" onClick={() => setViewer(fileUrl(m.image_id))}
                     className="rounded-2xl max-w-full max-h-64 object-cover cursor-zoom-in" />
@@ -144,8 +147,8 @@ export default function ChatThread() {
                     {m.text}
                   </div>
                 )}
-                <span className="text-[10px] mt-1 mx-1" style={{ color: "var(--text-muted)" }}>{relativeTime(m.created_at)}</span>
-                {myLastReadId === m.id && <span className="text-[11px] font-medium mr-1" style={{ color: "var(--teal)" }}>Seen</span>}
+                <span className="text-xs mt-1 mx-1" style={{ color: "var(--text-muted)" }}>{relativeTime(m.created_at)}</span>
+                {myLastReadId === m.id && <span className="text-xs font-medium mr-1" style={{ color: "var(--teal-dark)" }}>Seen</span>}
               </div>
             </div>
           );
@@ -155,7 +158,7 @@ export default function ChatThread() {
 
       <div className="min-h-[20px] px-2">
         {typingName && (
-          <span className="text-xs font-medium inline-flex items-center gap-1" style={{ color: "var(--teal)" }} data-testid="typing-indicator">
+          <span className="text-xs font-medium inline-flex items-center gap-1" style={{ color: "var(--teal-dark)" }} data-testid="typing-indicator">
             {typingName} is typing<span className="animate-pulse">…</span>
           </span>
         )}
@@ -164,14 +167,14 @@ export default function ChatThread() {
       <div className="flex items-center gap-2 pt-3 mt-1 border-t" style={{ borderColor: "var(--divider)" }}>
         <label className="grid place-items-center rounded-full cursor-pointer shrink-0" style={{ width: 40, height: 40, background: "var(--surface-tertiary)" }}>
           <Camera size={18} color="var(--brand)" />
-          <input type="file" accept="image/*" capture="environment" className="hidden" onChange={pickImage} />
+          <input type="file" accept="image/*" capture="environment" aria-label="Take photo" className="hidden" onChange={pickImage} />
         </label>
         <label className="grid place-items-center rounded-full cursor-pointer shrink-0" style={{ width: 40, height: 40, background: "var(--surface-tertiary)" }} data-testid="chat-gallery">
           <ImageIcon size={18} color="var(--brand)" />
-          <input type="file" accept="image/*" className="hidden" onChange={pickImage} />
+          <input type="file" accept="image/*" aria-label="Choose photo" className="hidden" onChange={pickImage} />
         </label>
         <input className={inputCls} style={inputStyle} placeholder={pending ? "Uploading…" : "Message…"} value={text} onChange={onInputChange} onKeyDown={(e) => e.key === "Enter" && send()} data-testid="chat-input" />
-        <button onClick={() => send()} className="grid place-items-center rounded-full shrink-0" style={{ width: 44, height: 44, background: "var(--teal)" }} data-testid="chat-send"><Send size={18} color="#fff" /></button>
+        <button onClick={() => send()} aria-label="Send message" className="grid place-items-center rounded-full shrink-0" style={{ width: 44, height: 44, background: "var(--teal-dark)" }} data-testid="chat-send"><Send size={18} color="#fff" /></button>
       </div>
 
       {viewer && <ImageViewer src={viewer} onClose={() => setViewer(null)} />}

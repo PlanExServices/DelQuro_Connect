@@ -1,7 +1,7 @@
-# DelQuro Connect — Unified Veterinary Hospital Coordination
+# DelQuro Connect — Veterinary Hospital Coordination
 
-> **PlanExServices / DelQuro Connect & CAH Connect**  
-> A mobile-first, unified veterinary coordination platform combining the full feature sets of both repositories. Engineered with a **4-tab condensed mobile navigation** (Huddle as default), **Time Off capacity engine**, **multi-document master schedule retention**, and **frictionless persona switching**.
+> **PlanExServices / DelQuro Connect & CAH Connect**
+> A mobile-first veterinary coordination platform with four mobile tabs, a team Huddle, daily time-off capacity, retained schedules, and team chat.
 
 ---
 
@@ -9,10 +9,10 @@
 
 | Tab | Position | Scope & Key Capabilities |
 | :--- | :---: | :--- |
-| **1. 📢 Huddle** | **Far Left & Default** | Hospital announcements, pinned surgical/antibiotic safety protocols (fixed top banner with gold/burgundy), document & clinical photo attachments with zoom/pinch viewer, one-tap *"Read & Understood"* compliance tracking, emoji reactions, kudos spotlight. |
-| **2. 📅 Time Off** | **Center-Left (Primary Lane)** | Full interactive monthly calendar, capacity rules (*System Default 2/day vs Custom Overrides 0–8*), inline unavailable reasons, staff request workflow (Full Day, AM Shift, PM Shift, Night Shift, Custom Hours), manager approvals/denials with response notes, and **Direct Manager Scheduling**. |
-| **3. 📋 Schedule** | **Center-Right** | Multi-document retained posted schedules (no file overwriting), required custom naming, effective timeframe classification (*Current Active, Upcoming, All Posted, Archived*), department filtering, and high-resolution zoom viewer. |
-| **4. ⚡ Hospital Tools** | **Far Right** | Unified mobile center with segmented controls for **Shift Chat** (`#general`, `#vet-techs`, `#doctors-dvm`, `#front-desk`), **Staff Roster & Campus Management**, **Hospital Settings & Capacity Rules**, and **Alpha Persona Switcher**. |
+| **1. 📢 Huddle** | **Far Left & Default** | Team announcements, the latest versioned protocol with individual acknowledgment, photo attachments, and team celebrations. |
+| **2. 📅 Time Off** | **Center-Left** | Monthly approved/limit counts, Full and Closed days, pending indicators, daily coverage detail, requests, and manager approvals. |
+| **3. 📋 Schedule** | **Center-Right** | Retained schedules with effective dates, campus and department filters, plus image and in-app PDF previews. |
+| **4. 💬 Chat** | **Far Right** | Team conversations with unread counts directly in the mobile navigation. |
 
 ---
 
@@ -20,40 +20,49 @@
 
 ### 1. 📢 Huddle (Hospital Feed & Clinical Protocols)
 - **Default View:** Greets staff immediately upon launch with the active hospital feed.
-- **Pinned Protocol Banner:** Critical clinical alerts stay pinned to the top in a gold/burgundy banner.
-- **Attachment Viewer:** Tap any attachment to zoom (`+` / `-`), pan/drag, simulate mobile pinch-to-zoom, and download.
-- **Compliance Tracking:** *"Mark as Read"* and *"Read & Understood"* protocol verification.
-- **Kudos Spotlight:** Weekly team recognition displayed prominently.
+- **Current Protocol:** Managers can pin a versioned post. The newest protocol appears at the top with its date and an individual acknowledgment action.
+- **Attachment Viewer:** Tap an image attachment to zoom and pan.
+- **Team Celebrations:** Birthdays, anniversaries, and the kudos spotlight follow the main feed.
 
 ### 2. 📅 Time Off & Capacity Management (Primary Lane)
-- **Interactive Calendar Grid:** Month navigation, quick jump to today, and day status indicators (*`0/2 off`, `2/2 FULL`, `CLOSED`*).
-- **Day Limits & Overrides:** Set custom max staff (0–8) or close dates with management notes (e.g., *"All-Hands Hospital Inspection"*).
-- **Staff Request Flow:** Full Day, AM Shift, PM Shift, Night Shift, Custom Hours, reason, and live capacity warning.
-- **Direct Manager Scheduling:** Managers can directly schedule approved time off for any staff member without waiting for pending requests.
+- **Interactive Calendar Grid:** Month navigation, Today, approved/limit counts, Full and Closed labels, and pending-request dots.
+- **Day Limits & Overrides:** Managers can set a daily maximum (0–8); the default is 2.
+- **Request Flow:** Full-day requests include a reason and a capacity warning. Managers can approve or decline pending requests and add an already-approved entry.
 
 ### 3. 📋 Master Schedule (Retained Records)
-- **Permanent Retention:** Every upload is preserved rather than replacing previous records.
-- **Custom Title Required:** Explicit schedule names (e.g., *"Master Floor & Surgery — Week of Aug 10-16"*).
-- **Timeframe Classification:** Grouped into Current Active, Upcoming, All Posted, and Archived.
+- **Retained Uploads:** Uploads are listed separately until a manager deletes them.
+- **Effective Dates:** New uploads include a title, start and end date, and optional campus and department. Current and Upcoming tabs follow those dates; All posted includes earlier uploads.
+- **File Preview:** Images open in the zoom viewer, and PDFs render in-app with page controls. Other file types remain downloadable.
 
-### 4. ⚡ Hospital Tools (Chat, Directory, Settings, Persona Switcher)
-- **Shift Chat:** Multi-channel team messaging (`#general`, `#vet-techs`, `#doctors-dvm`, `#front-desk`).
-- **Staff Roster & Campus Management:** Directory and multi-campus support (CAH Main Campus + North Urgent Care branch).
-- **Hospital Settings & Capacity Rules:** Manage capacity defaults, roles, invitations, and location settings.
-- **Alpha Persona Switcher:** Zero-credential switching between **Alice Chen** (*Lead LVT*), **Marcus Green** (*Vet Tech*), **Sophia Taylor** (*Reception*), **Jordan Miller** (*Assistant*), **Cody Martinez** (*Practice Manager*), and **Dr. Eleanor Vance** (*Medical Director/Admin*).
-- **Practice Seeder & Reset:** Optional button to load realistic August 2026 practice data or reset to factory clean state.
+### 4. 💬 Chat and Tools
+- **Shift Chat:** User-created group conversations are accessible from the mobile Chat tab and desktop sidebar. Unread counts appear in navigation.
+- **Tools & Settings:** One gear destination for account preferences, team tools, campus branding and administration; open it from the mobile header or desktop sidebar.
+- **Team Directory & Locations:** Staff directory and role-based campus management.
+- **Administration:** Manage roles, invitations, and locations according to permissions.
 
 ### Implementation status (read me first)
 
-The feature list above merges the DelQuro Connect build with the CAH Connect
-design spec, and a few of those items are **not implemented yet** in this
-codebase: the in-app practice seeder/reset, the alpha persona switcher, and
-shift-based time off (AM/PM/Night/Custom hours) — time off is currently
-requested per full day. Chat channels are user-created (the demo seed adds
-`#general`, `#vet-techs`, `#doctors-dvm`, `#front-desk`); they are not
-hard-coded. Everything else (Huddle, Time Off capacity engine, retained master
-schedules, roster/locations, roles, invites, chat, kudos/achievements) is
-implemented in `backend/server.py` + `frontend/src`.
+Time off is currently requested per full day. There is no in-app practice
+seeder/reset, persona switcher, or separate archived-schedule view. Chat groups
+are user-created; optional development seeding is available from the server.
+
+The requested native iPhone/Android companion and workstation phone approval
+flow are specified in [the mobile authentication and Chat design](docs/WORKSTATION_MOBILE_AUTH_DESIGN.md).
+The `mobile/` Expo project is a starter only; web phone approval, one-hour
+workstation sessions, a single canonical Chat group, and on-site alerts are
+not implemented yet.
+
+The [veterinary team and naming brief](docs/VETERINARY_TEAM_NAMING_BRIEF.md)
+records public industry research and criteria for choosing a product name with
+the hospital team. DelQuro Connect remains the working preview name.
+The [project context and decisions](docs/PROJECT_CONTEXT.md) records confirmed
+requirements and naming constraints for future work.
+
+The local web preview now has [configurable campus branding](docs/CAMPUS_BRANDING.md):
+COMMON uses Commonwealth Animal Hospital's public logo and website colors,
+and administrators can edit each campus's ID tag, website, logo and palette
+under the unified **Tools & Settings** gear. This is visual customization and
+campus assignment, not hospital-by-hospital data isolation.
 
 ---
 
@@ -81,7 +90,7 @@ implemented in `backend/server.py` + `frontend/src`.
 
 ### Frontend
 - React 19, React Router 7, Tailwind CSS 3.4
-- `lucide-react`, `sonner`, `clsx`, `tailwind-merge`
+- `lucide-react`, `sonner`, `clsx`, `tailwind-merge`, `pdfjs-dist`
 - `react-day-picker` (calendar), `date-fns`
 
 ### Backend
@@ -170,7 +179,7 @@ application plus a MongoDB resource:
 
 The container serves the SPA at `/` and the API at `/api` on the same origin, so
 no CORS setup or build-time backend URL is required. Create the first admin at
-`/setup` with `ADMIN_BOOTSTRAP_CODE`, then invite the team from Hospital Tools →
+`/setup` with `ADMIN_BOOTSTRAP_CODE`, then invite the team from Tools & Settings →
 Invitations. Prefer separate frontend/backend applications? Use
 `Dockerfile.backend` + `frontend/Dockerfile` — settings are in the deployment guide.
 

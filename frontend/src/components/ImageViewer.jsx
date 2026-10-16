@@ -66,9 +66,9 @@ export function ImageViewer({ src, onClose }) {
       data-testid="image-viewer"
     >
       <div className="absolute top-4 right-4 flex gap-2 z-10">
-        <button onClick={(e) => { e.stopPropagation(); setScale((s) => clamp(s + 0.5)); }} className="grid place-items-center rounded-full text-white" style={btn} data-testid="viewer-zoom-in"><ZoomIn size={20} /></button>
-        <button onClick={(e) => { e.stopPropagation(); setScale((s) => clamp(s - 0.5)); }} className="grid place-items-center rounded-full text-white" style={btn} data-testid="viewer-zoom-out"><ZoomOut size={20} /></button>
-        <button onClick={onClose} className="grid place-items-center rounded-full text-white" style={btn} data-testid="viewer-close"><X size={20} /></button>
+        <button onClick={(e) => { e.stopPropagation(); setScale((s) => clamp(s + 0.5)); }} aria-label="Zoom in" className="grid place-items-center rounded-full text-white" style={btn} data-testid="viewer-zoom-in"><ZoomIn size={20} /></button>
+        <button onClick={(e) => { e.stopPropagation(); setScale((s) => clamp(s - 0.5)); }} aria-label="Zoom out" className="grid place-items-center rounded-full text-white" style={btn} data-testid="viewer-zoom-out"><ZoomOut size={20} /></button>
+        <button onClick={onClose} aria-label="Close image viewer" className="grid place-items-center rounded-full text-white" style={btn} data-testid="viewer-close"><X size={20} /></button>
       </div>
       <div className="absolute bottom-5 left-1/2 -translate-x-1/2 text-xs text-white/70 z-10 pointer-events-none">Pinch, scroll, or use buttons to zoom · drag to pan</div>
       <img

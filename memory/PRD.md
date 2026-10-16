@@ -1,5 +1,9 @@
 # Delquro Connect (Web) — PRD
 
+> Historical baseline from June 2026. For the owner's current decisions and
+> implementation status, use [project context](../docs/PROJECT_CONTEXT.md),
+> [campus branding](../docs/CAMPUS_BRANDING.md), and the [README](../README.md).
+
 ## Original problem statement
 Build a web application that is a faithful clone of the existing Delquro Connect mobile app (Expo/React Native) for veterinary hospital team communication + coordination, consuming the exact same API contract (FastAPI + MongoDB). Brand: navy #0F3A5F + teal #00A5A8, serif headings, activity/pulse-wave logo. JWT auth in browser localStorage. Production-safe bootstrap (first admin via one-time code, invite-code joins, RBAC from user.permissions). 5 destinations: Huddle, Time Off, Schedule, Chat, More.
 

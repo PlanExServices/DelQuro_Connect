@@ -2,6 +2,7 @@ import "@/App.css";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { Toaster } from "sonner";
 import { AuthProvider, useAuth } from "@/context/AuthContext";
+import { CampusProvider } from "@/context/CampusContext";
 import { AppLayout } from "@/components/AppLayout";
 import { Loader2 } from "lucide-react";
 
@@ -50,6 +51,7 @@ function App() {
     <div className="App">
       <BrowserRouter>
         <AuthProvider>
+          <CampusProvider>
           <Toaster position="top-center" richColors />
           <Routes>
             <Route path="/" element={<Root />} />
@@ -77,6 +79,7 @@ function App() {
 
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
+          </CampusProvider>
         </AuthProvider>
       </BrowserRouter>
     </div>

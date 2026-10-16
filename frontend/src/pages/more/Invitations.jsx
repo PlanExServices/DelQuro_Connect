@@ -5,7 +5,9 @@ import { Plus, Copy, Trash2, UserPlus } from "lucide-react";
 import { BackHeader } from "@/components/BackHeader";
 import { Modal } from "@/components/Modal";
 import { Card, Btn, Field, inputCls, inputStyle, RoleChip } from "@/components/kit";
-import { Loading, EmptyState } from "@/components/States";
+import { Loading, EmptyState, ErrorState } from "@/components/States";
+import { useAuth } from "@/context/AuthContext";
+import { useCampus } from "@/context/CampusContext";
 
 const ROLES = ["staff", "manager", "admin"];
 const CHANNELS = ["code", "email", "phone"];
@@ -13,8 +15,9 @@ const CHANNELS = ["code", "email", "phone"];
 export default function Invitations() {
   const [invites, setInvites] = useState(null);
   const [show, setShow] = useState(false);
+  const [error, setError] = useState("");
 
-  const load = () => api.get("/invites").then(({ data }) => setInvites(data)).catch((e) => toast.error(apiError(e)));
+  const load = () => { setError(""); api.get("/invites").then(({ data }) => setInvites(data)).catch((e) => setError(apiError(e))); };
   useEffect(() => { load(); }, []);
 
   const copy = (inv) => {
@@ -32,7 +35,7 @@ export default function Invitations() {
     <>
       <BackHeader title="My Invitations" subtitle="Invite teammates with one-time codes"
         action={<Btn onClick={() => setShow(true)} data-testid="new-invite-btn"><Plus size={16} /> New</Btn>} />
-      {invites === null ? <Loading /> : invites.length === 0 ? (
+      {error ? <ErrorState message={error} onRetry={load} /> : invites === null ? <Loading /> : invites.length === 0 ? (
         <EmptyState icon={UserPlus} title="No invites yet" hint="Create an invite code to add teammates." />
       ) : (
         <div className="space-y-3">
@@ -46,8 +49,8 @@ export default function Invitations() {
                 </div>
                 <p className="text-xs mt-1" style={{ color: "var(--text-muted)" }}>{inv.job_title || "No job title"}{inv.campus ? ` · ${inv.campus}` : ""}</p>
               </div>
-              <button onClick={() => copy(inv)} className="grid place-items-center rounded-full" style={{ width: 38, height: 38, background: "var(--surface-tertiary)" }} data-testid="invite-copy"><Copy size={16} color="var(--brand)" /></button>
-              <button onClick={() => del(inv.id)} className="grid place-items-center rounded-full" style={{ width: 38, height: 38, background: "var(--surface-tertiary)" }} data-testid="invite-delete"><Trash2 size={16} color="var(--error)" /></button>
+              <button onClick={() => copy(inv)} aria-label={`Copy invite ${inv.code}`} className="grid place-items-center rounded-full" style={{ width: 40, height: 40, background: "var(--surface-tertiary)" }} data-testid="invite-copy"><Copy size={16} color="var(--brand)" /></button>
+              <button onClick={() => del(inv.id)} aria-label={`Delete invite ${inv.code}`} className="grid place-items-center rounded-full" style={{ width: 40, height: 40, background: "var(--surface-tertiary)" }} data-testid="invite-delete"><Trash2 size={16} color="var(--error)" /></button>
             </Card>
           ))}
         </div>
@@ -58,17 +61,22 @@ export default function Invitations() {
 }
 
 function CreateInvite({ onClose, onDone }) {
+  const { user } = useAuth();
+  const { locations } = useCampus();
   const [access, setAccess] = useState("staff");
   const [channel, setChannel] = useState("code");
   const [value, setValue] = useState("");
   const [campus, setCampus] = useState("");
+  const [locationId, setLocationId] = useState("");
   const [jobTitle, setJobTitle] = useState("");
   const [busy, setBusy] = useState(false);
+  useEffect(() => { if (locations.length === 1) setLocationId(locations[0].id); }, [locations]);
 
   const submit = async () => {
     setBusy(true);
     try {
-      await api.post("/invites", { access, channel, value: value || undefined, campus: campus || undefined, job_title: jobTitle || undefined });
+      if (locations.length > 1 && !locationId) return toast.error("Choose a campus for this teammate");
+      await api.post("/invites", { access, channel, value: value || undefined, campus: locations.length ? undefined : campus || undefined, location_id: locationId || undefined, job_title: jobTitle || undefined });
       toast.success("Invite created");
       onDone();
     } catch (e) { toast.error(apiError(e)); } finally { setBusy(false); }
@@ -79,7 +87,7 @@ function CreateInvite({ onClose, onDone }) {
       footer={<Btn onClick={submit} disabled={busy} className="w-full" data-testid="submit-invite">{busy ? "Creating…" : "Generate code"}</Btn>}>
       <Field label="Access role">
         <div className="flex gap-2">
-          {ROLES.map((r) => (
+          {ROLES.filter((role) => role !== "admin" || user?.role === "admin").map((r) => (
             <button key={r} onClick={() => setAccess(r)} className="flex-1 py-2 rounded-full text-sm font-medium capitalize" style={{ background: access === r ? "var(--brand)" : "var(--surface-tertiary)", color: access === r ? "#fff" : "var(--brand)" }} data-testid={`invite-access-${r}`}>{r}</button>
           ))}
         </div>
@@ -97,7 +105,12 @@ function CreateInvite({ onClose, onDone }) {
         </Field>
       )}
       <div className="grid grid-cols-2 gap-3">
-        <Field label="Campus (optional)"><input className={inputCls} style={inputStyle} value={campus} onChange={(e) => setCampus(e.target.value)} /></Field>
+        {locations.length ? <Field label="Campus">
+          <select className={inputCls} style={inputStyle} value={locationId} onChange={(e) => setLocationId(e.target.value)}>
+            <option value="">Choose campus</option>
+            {locations.map((location) => <option key={location.id} value={location.id}>{location.campus_code} · {location.name}</option>)}
+          </select>
+        </Field> : <Field label="Campus (optional)"><input className={inputCls} style={inputStyle} value={campus} onChange={(e) => setCampus(e.target.value)} /></Field>}
         <Field label="Job title (optional)"><input className={inputCls} style={inputStyle} value={jobTitle} onChange={(e) => setJobTitle(e.target.value)} /></Field>
       </div>
     </Modal>

@@ -4,10 +4,13 @@ import { toast } from "sonner";
 import { Logo } from "@/components/Logo";
 import { Btn, Field, inputCls, inputStyle } from "@/components/kit";
 import { useAuth } from "@/context/AuthContext";
+import { useCampus } from "@/context/CampusContext";
+import { CampusBrand } from "@/components/CampusBrand";
 import { api, apiError } from "@/lib/api";
 
 export default function Login() {
   const { login } = useAuth();
+  const { campus } = useCampus();
   const navigate = useNavigate();
   const [form, setForm] = useState({ email: "", password: "" });
   const [busy, setBusy] = useState(false);
@@ -42,6 +45,7 @@ export default function Login() {
             <p className="text-sm mt-5" style={{ color: "var(--text-secondary)" }}>
               Your veterinary team, aligned every shift.
             </p>
+            {campus && <div className="w-full mt-6 pt-5 border-t" style={{ borderColor: "var(--divider)" }}><CampusBrand campus={campus} /></div>}
           </div>
           <form onSubmit={submit}>
             <Field label="Email">
@@ -55,7 +59,7 @@ export default function Login() {
             </Btn>
           </form>
           <p className="text-sm text-center mt-6" style={{ color: "var(--text-secondary)" }}>
-            New here? <Link to="/register" className="font-semibold" style={{ color: "var(--teal)" }}>Create an account</Link>
+            New here? <Link to="/register" className="font-semibold" style={{ color: "var(--teal-dark)" }}>Create an account</Link>
           </p>
         </div>
       </div>

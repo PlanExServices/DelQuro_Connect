@@ -1,22 +1,26 @@
 import { useEffect, useState } from "react";
 import { api, apiError } from "@/lib/api";
-import { toast } from "sonner";
 import { BackHeader } from "@/components/BackHeader";
 import { Avatar } from "@/components/Avatar";
 import { Card, RoleChip } from "@/components/kit";
-import { Loading, EmptyState } from "@/components/States";
+import { Loading, EmptyState, ErrorState } from "@/components/States";
 import { Users } from "lucide-react";
 
 export default function Directory() {
   const [members, setMembers] = useState(null);
+  const [error, setError] = useState(null);
+  const load = () => {
+    setError(null);
+    api.get("/team/members").then(({ data }) => setMembers(data)).catch((e) => setError(apiError(e)));
+  };
   useEffect(() => {
-    api.get("/team/members").then(({ data }) => setMembers(data)).catch((e) => toast.error(apiError(e)));
+    load();
   }, []);
 
   return (
     <>
       <BackHeader title="Team Directory" subtitle="Everyone at your hospital" />
-      {members === null ? <Loading /> : members.length === 0 ? (
+      {error ? <ErrorState message={error} onRetry={load} /> : members === null ? <Loading /> : members.length === 0 ? (
         <EmptyState icon={Users} title="No team members yet" />
       ) : (
         <div className="space-y-3">

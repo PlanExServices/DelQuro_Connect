@@ -33,6 +33,7 @@ load_dotenv(ROOT / ".env")
 
 PORT = int(os.environ.get("PORT", "8000"))
 IN_MEMORY = os.environ.get("IN_MEMORY_DB") == "1"
+HOST = os.environ.get("HOST", "127.0.0.1" if IN_MEMORY else "0.0.0.0")
 
 if IN_MEMORY:
     # Must happen before importing server.py, which does
@@ -44,7 +45,7 @@ if IN_MEMORY:
     os.environ.setdefault("MONGO_URL", "mongodb://localhost:27017")
     os.environ.setdefault("DB_NAME", "delquro_connect_dev")
     os.environ.setdefault("JWT_SECRET", "dev-only-in-memory-secret")
-    os.environ.setdefault("ADMIN_BOOTSTRAP_CODE", "DELQURO-SETUP-2026")
+    os.environ.setdefault("ADMIN_BOOTSTRAP_CODE", "LOCAL-ONLY-SETUP-CODE-2026")
 
 import server  # noqa: E402  (imported after the motor patch)
 from auth import hash_password  # noqa: E402
@@ -52,12 +53,12 @@ from auth import hash_password  # noqa: E402
 DEMO_PASSWORD = os.environ.get("DEMO_PASSWORD", "Delquro2026")
 
 DEMO_USERS = [
-    ("Eleanor Vance", "eleanor@delquroconnect.com", "admin", "Veterinarian", "CAH Main Campus"),
-    ("Cody Martinez", "cody@delquroconnect.com", "manager", "Practice Manager", "CAH Main Campus"),
-    ("Alice Chen", "alice@delquroconnect.com", "staff", "Veterinary Technician", "CAH Main Campus"),
-    ("Marcus Green", "marcus@delquroconnect.com", "staff", "Veterinary Technician", "CAH Main Campus"),
-    ("Sophia Taylor", "sophia@delquroconnect.com", "staff", "Receptionist", "North Urgent Care"),
-    ("Jordan Miller", "jordan@delquroconnect.com", "staff", "Vet Assistant", "North Urgent Care"),
+    ("Eleanor Vance", "eleanor@delquroconnect.com", "admin", "Veterinarian", "Commonwealth Animal Hospital"),
+    ("Cody Martinez", "cody@delquroconnect.com", "manager", "Practice Manager", "Commonwealth Animal Hospital"),
+    ("Alice Chen", "alice@delquroconnect.com", "staff", "Veterinary Technician", "Commonwealth Animal Hospital"),
+    ("Marcus Green", "marcus@delquroconnect.com", "staff", "Veterinary Technician", "Commonwealth Animal Hospital"),
+    ("Sophia Taylor", "sophia@delquroconnect.com", "staff", "Receptionist", "Commonwealth Animal Hospital"),
+    ("Jordan Miller", "jordan@delquroconnect.com", "staff", "Vet Assistant", "Commonwealth Animal Hospital"),
 ]
 
 
@@ -71,6 +72,17 @@ async def seed_demo() -> None:
 
     now = datetime.now(timezone.utc)
     today = now.date().isoformat()
+    common_location = {
+        "name": "Commonwealth Animal Hospital",
+        "campus_code": "COMMON",
+        "website_url": "https://www.commonwealthanimal.com/",
+        "logo_url": "/brands/commonwealth.svg",
+        "primary_color": "#2B2F88",
+        "accent_color": "#811317",
+        "soft_color": "#E4EEF1",
+        "created_at": now.isoformat(),
+    }
+    location_id = str((await db.locations.insert_one(common_location)).inserted_id)
     ids = {}
     for name, email, role, job_title, campus in DEMO_USERS:
         doc = {
@@ -83,12 +95,34 @@ async def seed_demo() -> None:
             "job_title": job_title,
             "birthday": None,
             "start_date": None,
-            "location_id": None,
+            "location_id": location_id,
             "kudos": 0,
             "preferences": dict(server.DEFAULT_PREFERENCES),
             "created_at": now.isoformat(),
         }
         ids[name] = str((await db.users.insert_one(doc)).inserted_id)
+
+    # An agent-only account may be supplied for private UI review. It is never
+    # created in normal server mode and its password is not stored in source.
+    agent_email = os.environ.get("PREVIEW_AGENT_EMAIL")
+    agent_password = os.environ.get("PREVIEW_AGENT_PASSWORD")
+    if agent_email and agent_password:
+        agent_name = "Codex UI Review"
+        await db.users.insert_one({
+            "email": agent_email.lower(),
+            "password_hash": hash_password(agent_password),
+            "name": agent_name,
+            "initials": server.initials_of(agent_name),
+            "campus": common_location["name"],
+            "role": "admin",
+            "job_title": "UI reviewer",
+            "birthday": None,
+            "start_date": None,
+            "location_id": location_id,
+            "kudos": 0,
+            "preferences": dict(server.DEFAULT_PREFERENCES),
+            "created_at": now.isoformat(),
+        })
 
     await db.posts.insert_one({
         "author_id": ids["Eleanor Vance"],
@@ -144,7 +178,7 @@ async def seed_demo() -> None:
     })
     await db.users.update_one({"_id": server.ObjectId(ids["Alice Chen"])}, {"$inc": {"kudos": 1}})
 
-    print(f"[seed] demo data ready — sign in as eleanor@delquroconnect.com / {DEMO_PASSWORD}")
+    print("[seed] demo data ready")
 
 
 if IN_MEMORY and os.environ.get("SEED_DEMO") == "1":
@@ -157,7 +191,7 @@ if __name__ == "__main__":
     import uvicorn
 
     print(
-        f"[dev] starting on http://0.0.0.0:{PORT} "
+        f"[dev] starting on http://{HOST}:{PORT} "
         f"({'in-memory mongodb' if IN_MEMORY else os.environ.get('MONGO_URL')})"
     )
-    uvicorn.run(server.app, host="0.0.0.0", port=PORT, log_level="info")
+    uvicorn.run(server.app, host=HOST, port=PORT, log_level="info")

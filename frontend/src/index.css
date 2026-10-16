@@ -25,7 +25,7 @@
   --border-strong: #00A5A8;
   --divider: #E2EEEC;
   --text-secondary: #475569; /* CAH navy muted */
-  --text-muted: #94A3B8;
+  --text-muted: #64748B;
   --input-bg: #F4F8FA; /* CAH paleBlue */
   --scrim: rgba(27,42,74,0.4); /* CAH navyDark */
 }
@@ -74,3 +74,12 @@ input, textarea, select { font-family: inherit; }
 
 .no-scrollbar::-webkit-scrollbar { display: none; }
 .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+
+.compact-mode main .card-shadow { padding: 0.85rem; border-radius: 1rem; }
+.compact-mode main .space-y-4 > * + * { margin-top: 0.5rem; }
+.compact-mode main .mb-6 { margin-bottom: 0.9rem; }
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-fade-up, .animate-spin-slow { animation: none; }
+  *, *::before, *::after { scroll-behavior: auto !important; transition-duration: 0.01ms !important; }
+}

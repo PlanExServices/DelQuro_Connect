@@ -5,7 +5,7 @@ export function BackHeader({ title, subtitle, to = -1, action }) {
   const navigate = useNavigate();
   return (
     <div className="flex items-center gap-3 mb-6 animate-fade-up">
-      <button onClick={() => navigate(to)} className="grid place-items-center rounded-full shrink-0" style={{ width: 40, height: 40, background: "var(--card)" }} data-testid="back-header">
+      <button onClick={() => navigate(to)} aria-label="Go back" className="grid place-items-center rounded-full shrink-0" style={{ width: 40, height: 40, background: "var(--card)" }} data-testid="back-header">
         <ArrowLeft size={18} color="var(--brand)" />
       </button>
       <div className="min-w-0 flex-1">

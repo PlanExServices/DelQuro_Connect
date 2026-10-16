@@ -1,21 +1,22 @@
 import { useEffect, useState } from "react";
 import { api, apiError } from "@/lib/api";
-import { toast } from "sonner";
 import { FileText } from "lucide-react";
 import { BackHeader } from "@/components/BackHeader";
 import { Card } from "@/components/kit";
-import { Loading, EmptyState } from "@/components/States";
+import { Loading, EmptyState, ErrorState } from "@/components/States";
 
 export default function HospitalRules() {
   const [rules, setRules] = useState(null);
+  const [error, setError] = useState("");
+  const load = () => { setError(""); api.get("/knowledge/hospital_rules").then(({ data }) => setRules(data)).catch((e) => setError(apiError(e))); };
   useEffect(() => {
-    api.get("/knowledge/hospital_rules").then(({ data }) => setRules(data)).catch((e) => toast.error(apiError(e)));
+    load();
   }, []);
 
   return (
     <>
       <BackHeader title="Hospital Rules" subtitle="Policies every teammate should know" />
-      {rules === null ? <Loading /> : rules.length === 0 ? (
+      {error ? <ErrorState message={error} onRetry={load} /> : rules === null ? <Loading /> : rules.length === 0 ? (
         <EmptyState icon={FileText} title="No rules published" />
       ) : (
         <div className="space-y-3">

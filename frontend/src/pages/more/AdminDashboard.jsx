@@ -1,10 +1,9 @@
 import { useEffect, useState } from "react";
 import { Users, Clock, MessageSquare, Calendar, FileText } from "lucide-react";
 import { api, apiError } from "@/lib/api";
-import { toast } from "sonner";
 import { BackHeader } from "@/components/BackHeader";
 import { Card } from "@/components/kit";
-import { Loading } from "@/components/States";
+import { Loading, ErrorState } from "@/components/States";
 
 const STATS = [
   { key: "total_staff", label: "Total staff", icon: Users },
@@ -16,14 +15,19 @@ const STATS = [
 
 export default function AdminDashboard() {
   const [stats, setStats] = useState(null);
+  const [error, setError] = useState(null);
+  const load = () => {
+    setError(null);
+    api.get("/admin/stats").then(({ data }) => setStats(data)).catch((e) => setError(apiError(e)));
+  };
   useEffect(() => {
-    api.get("/admin/stats").then(({ data }) => setStats(data)).catch((e) => toast.error(apiError(e)));
+    load();
   }, []);
 
   return (
     <>
       <BackHeader title="Admin Dashboard" subtitle="Workspace at a glance" />
-      {stats === null ? <Loading /> : (
+      {error ? <ErrorState message={error} onRetry={load} /> : stats === null ? <Loading /> : (
         <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
           {STATS.map(({ key, label, icon: Icon }) => (
             <Card key={key} className="p-5" data-testid={`stat-${key}`}>

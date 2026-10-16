@@ -7,7 +7,7 @@ import { useAuth } from "@/context/AuthContext";
 import { Avatar } from "@/components/Avatar";
 import { Modal } from "@/components/Modal";
 import { PageHeader, Card, Btn, Field, inputCls, inputStyle } from "@/components/kit";
-import { Loading } from "@/components/States";
+import { Loading, ErrorState } from "@/components/States";
 
 const DOW = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"];
 const STATUS_COLOR = { pending: "var(--warning)", approved: "var(--success)", declined: "var(--error)" };
@@ -19,30 +19,35 @@ export default function TimeOff() {
   const today = new Date();
   const [cursor, setCursor] = useState({ y: today.getFullYear(), m: today.getMonth() });
   const [selected, setSelected] = useState(iso(today.getFullYear(), today.getMonth(), today.getDate()));
-  const [month, setMonth] = useState([]);
+  const [capacity, setCapacity] = useState({});
   const [dayReqs, setDayReqs] = useState(null);
   const [limit, setLimit] = useState(null);
+  const [monthError, setMonthError] = useState(null);
+  const [dayError, setDayError] = useState(null);
   const [showReq, setShowReq] = useState(false);
   const [showLimit, setShowLimit] = useState(false);
 
   const perms = user?.permissions || {};
 
   const loadMonth = useCallback(async () => {
+    setMonthError(null);
     try {
-      const { data } = await api.get(`/timeoff/month?year=${cursor.y}&month=${cursor.m + 1}`);
-      setMonth(data);
-    } catch (e) { toast.error(apiError(e)); }
+      const availability = await api.get(`/daylimit/month?year=${cursor.y}&month=${cursor.m + 1}`);
+      setCapacity(Object.fromEntries(availability.data.days.map((day) => [day.date, day])));
+    } catch (e) { setMonthError(apiError(e)); }
   }, [cursor]);
 
   const loadDay = useCallback(async () => {
     setDayReqs(null);
+    setLimit(null);
+    setDayError(null);
     try {
       const [r, l] = await Promise.all([
         api.get(`/timeoff?date=${selected}`),
         api.get(`/daylimit?date=${selected}`),
       ]);
       setDayReqs(r.data); setLimit(l.data);
-    } catch (e) { toast.error(apiError(e)); }
+    } catch (e) { setDayError(apiError(e)); }
   }, [selected]);
 
   useEffect(() => { loadMonth(); }, [loadMonth]);
@@ -52,17 +57,19 @@ export default function TimeOff() {
   const daysInMonth = new Date(cursor.y, cursor.m + 1, 0).getDate();
   const cells = [...Array(firstDay).fill(null), ...Array.from({ length: daysInMonth }, (_, i) => i + 1)];
 
-  const dotsFor = (d) => {
-    const date = iso(cursor.y, cursor.m, d);
-    const set = new Set(month.filter((t) => t.date === date).map((t) => t.status));
-    return [...set];
+  const move = (dir) => {
+    let m = cursor.m + dir, y = cursor.y;
+    if (m < 0) { m = 11; y--; } if (m > 11) { m = 0; y++; }
+    const day = Math.min(Number(selected.slice(-2)), new Date(y, m + 1, 0).getDate());
+    setCursor({ y, m });
+    setSelected(iso(y, m, day));
   };
 
-  const move = (dir) => setCursor((c) => {
-    let m = c.m + dir, y = c.y;
-    if (m < 0) { m = 11; y--; } if (m > 11) { m = 0; y++; }
-    return { y, m };
-  });
+  const goToday = () => {
+    const now = new Date();
+    setCursor({ y: now.getFullYear(), m: now.getMonth() });
+    setSelected(iso(now.getFullYear(), now.getMonth(), now.getDate()));
+  };
 
   const setStatus = async (id, status) => {
     try { await api.put(`/timeoff/${id}/status?status=${status}`); loadDay(); loadMonth(); toast.success(`Marked ${status}`); }
@@ -70,57 +77,46 @@ export default function TimeOff() {
   };
 
   const MONTH_NAME = new Date(cursor.y, cursor.m).toLocaleDateString(undefined, { month: "long", year: "numeric" });
+  const selectedCapacity = capacity[selected] || (limit?.date === selected ? limit : null);
+  const selectedStatus = selectedCapacity?.limit === 0 ? "Closed" : selectedCapacity?.remaining === 0 ? "Full" : `${selectedCapacity?.remaining ?? "—"} spots open`;
 
   return (
     <>
-      <PageHeader title="Time Off" subtitle="Capacity engine — system default 2/day with custom overrides 0–8" />
+      <PageHeader title="Time Off" subtitle="See coverage and plan time away" action={<Btn variant="outline" onClick={goToday} className="shrink-0 px-3 sm:px-5" data-testid="cal-today">Today</Btn>} />
 
-      <Card className="p-5 mb-4">
+      <Card className="p-3 sm:p-5 mb-4">
         <div className="flex items-center justify-between mb-4">
-          <button onClick={() => move(-1)} className="grid place-items-center rounded-full" style={{ width: 36, height: 36, background: "var(--surface-tertiary)" }} data-testid="cal-prev"><ChevronLeft size={18} color="var(--brand)" /></button>
+          <button onClick={() => move(-1)} aria-label="Previous month" className="grid place-items-center rounded-full" style={{ width: 40, height: 40, background: "var(--surface-tertiary)" }} data-testid="cal-prev"><ChevronLeft size={18} color="var(--brand)" /></button>
           <h3 className="font-display text-lg" style={{ color: "var(--brand)" }}>{MONTH_NAME}</h3>
-          <button onClick={() => move(1)} className="grid place-items-center rounded-full" style={{ width: 36, height: 36, background: "var(--surface-tertiary)" }} data-testid="cal-next"><ChevronRight size={18} color="var(--brand)" /></button>
+          <button onClick={() => move(1)} aria-label="Next month" className="grid place-items-center rounded-full" style={{ width: 40, height: 40, background: "var(--surface-tertiary)" }} data-testid="cal-next"><ChevronRight size={18} color="var(--brand)" /></button>
         </div>
         <div className="grid grid-cols-7 gap-1 mb-1">
           {DOW.map((d) => <div key={d} className="text-center text-xs font-semibold py-1" style={{ color: "var(--text-muted)" }}>{d}</div>)}
         </div>
-        <div className="grid grid-cols-7 gap-1">
+        {monthError ? <ErrorState message={monthError} onRetry={loadMonth} /> : <div className="grid grid-cols-7 gap-1">
           {cells.map((d, i) => {
             if (!d) return <div key={i} />;
             const date = iso(cursor.y, cursor.m, d);
             const isSel = date === selected;
+            const day = capacity[date];
+            const status = day?.limit === 0 ? "Closed" : day?.remaining === 0 ? "Full" : day ? `${day.approved}/${day.limit}` : "";
             return (
-              <button key={i} onClick={() => setSelected(date)} data-testid={`cal-day-${d}`}
-                className="aspect-square rounded-xl flex flex-col items-center justify-center gap-1 transition-colors"
-                style={{ background: isSel ? "var(--brand)" : "transparent", color: isSel ? "#fff" : "var(--on-surface)" }}>
+              <button key={i} onClick={() => setSelected(date)} data-testid={`cal-day-${d}`} aria-label={`${longDate(date)}: ${status || "loading"}${day?.pending ? `, ${day.pending} pending` : ""}`} aria-pressed={isSel}
+                className="min-h-12 sm:min-h-16 rounded-xl flex flex-col items-center justify-center gap-0.5 transition-colors"
+                style={{ background: isSel ? "var(--brand)" : day?.remaining === 0 ? "var(--error-soft)" : "transparent", color: isSel ? "#fff" : "var(--on-surface)" }}>
                 <span className="text-sm font-medium">{d}</span>
-                <div className="flex gap-0.5 h-1.5">
-                  {dotsFor(d).map((s) => <span key={s} className="rounded-full" style={{ width: 5, height: 5, background: isSel ? "#fff" : STATUS_COLOR[s] }} />)}
-                </div>
+                <span className="text-[10px] sm:text-xs font-semibold leading-none" style={{ color: isSel ? "#fff" : day?.remaining === 0 ? "var(--error)" : "var(--text-secondary)" }}>{status}</span>
+                {day?.pending > 0 && <span className="rounded-full" style={{ width: 5, height: 5, background: isSel ? "#fff" : "var(--warning)" }} />}
               </button>
             );
           })}
-        </div>
-        <div className="flex gap-4 mt-4 justify-center">
-          {Object.entries(STATUS_COLOR).map(([k, c]) => (
-            <div key={k} className="flex items-center gap-1.5"><span className="rounded-full" style={{ width: 8, height: 8, background: c }} /><span className="text-xs capitalize" style={{ color: "var(--text-secondary)" }}>{k}</span></div>
-          ))}
-        </div>
+        </div>}
+        <p className="text-xs text-center mt-3" style={{ color: "var(--text-secondary)" }}>Approved / daily limit · <span style={{ color: "var(--warning)" }}>●</span> pending request</p>
       </Card>
 
-      <Card className="p-5 mb-4">
-        <div className="flex items-center justify-around text-center">
-          <div>
-            <p className="text-xs uppercase tracking-wider mb-1" style={{ color: "var(--text-muted)" }}>Day limit</p>
-            <p className="font-display text-4xl" style={{ color: "var(--brand)" }}>{limit?.limit ?? "—"}</p>
-            <p className="text-xs mt-1" style={{ color: "var(--text-secondary)" }}>{limit ? `${limit.remaining} spots remaining` : ""}</p>
-          </div>
-          <div className="w-px self-stretch" style={{ background: "var(--divider)" }} />
-          <div>
-            <p className="text-xs uppercase tracking-wider mb-1" style={{ color: "var(--text-muted)" }}>Approved</p>
-            <p className="font-display text-4xl" style={{ color: "var(--success)" }}>{limit?.approved ?? "—"}</p>
-          </div>
-        </div>
+      <Card className="p-4 mb-4 flex items-center justify-between gap-3">
+        <div><p className="text-sm font-semibold" style={{ color: "var(--brand)" }}>{longDate(selected)}</p><p className="text-sm" style={{ color: "var(--text-secondary)" }}>{selectedCapacity ? `${selectedCapacity.approved} of ${selectedCapacity.limit} approved` : "Loading availability"}</p></div>
+        <span className="shrink-0 rounded-full px-3 py-1 text-xs font-semibold" style={{ background: selectedCapacity?.remaining === 0 ? "var(--error-soft)" : "var(--brand-tertiary)", color: selectedCapacity?.remaining === 0 ? "var(--error)" : "var(--teal-dark)" }}>{selectedStatus}</span>
       </Card>
 
       <div className="flex gap-3 mb-4">
@@ -130,8 +126,8 @@ export default function TimeOff() {
         </Btn>
       </div>
 
-      <p className="text-sm font-medium mb-3" style={{ color: "var(--text-secondary)" }}>{longDate(selected)}</p>
-      {dayReqs === null ? <Loading /> : dayReqs.length === 0 ? (
+      <h2 className="font-display text-lg mb-3" style={{ color: "var(--brand)" }}>Requests for this day</h2>
+      {dayError ? <ErrorState message={dayError} onRetry={loadDay} /> : dayReqs === null ? <Loading /> : dayReqs.length === 0 ? (
         <Card className="p-8 text-center"><p className="text-sm" style={{ color: "var(--text-muted)" }}>No requests for this day.</p></Card>
       ) : (
         <div className="space-y-3">
@@ -144,8 +140,8 @@ export default function TimeOff() {
               </div>
               {perms.approve_timeoff && r.status === "pending" ? (
                 <div className="flex gap-2">
-                  <button onClick={() => setStatus(r.id, "approved")} className="grid place-items-center rounded-full" style={{ width: 38, height: 38, background: "rgba(34,197,94,0.12)" }} data-testid="approve-btn"><Check size={18} color="var(--success)" /></button>
-                  <button onClick={() => setStatus(r.id, "declined")} className="grid place-items-center rounded-full" style={{ width: 38, height: 38, background: "rgba(239,68,68,0.12)" }} data-testid="decline-btn"><X size={18} color="var(--error)" /></button>
+                  <button onClick={() => setStatus(r.id, "approved")} aria-label={`Approve ${r.name}`} className="grid place-items-center rounded-full" style={{ width: 40, height: 40, background: "rgba(34,197,94,0.12)" }} data-testid="approve-btn"><Check size={18} color="var(--success)" /></button>
+                  <button onClick={() => setStatus(r.id, "declined")} aria-label={`Decline ${r.name}`} className="grid place-items-center rounded-full" style={{ width: 40, height: 40, background: "rgba(239,68,68,0.12)" }} data-testid="decline-btn"><X size={18} color="var(--error)" /></button>
                 </div>
               ) : (
                 <span className="text-xs font-semibold uppercase px-2.5 py-1 rounded-full capitalize" style={{ background: "var(--brand-tertiary)", color: STATUS_COLOR[r.status] }}>{r.status}</span>
@@ -155,13 +151,13 @@ export default function TimeOff() {
         </div>
       )}
 
-      {showReq && <RequestModal date={selected} canApprove={perms.add_approved_timeoff} onClose={() => setShowReq(false)} onDone={() => { setShowReq(false); loadDay(); loadMonth(); }} />}
-      {showLimit && <LimitModal date={selected} current={limit?.limit ?? 3} onClose={() => setShowLimit(false)} onDone={() => { setShowLimit(false); loadDay(); }} />}
+      {showReq && <RequestModal date={selected} capacity={selectedCapacity} canApprove={perms.add_approved_timeoff} onClose={() => setShowReq(false)} onDone={() => { setShowReq(false); loadDay(); loadMonth(); }} />}
+      {showLimit && <LimitModal date={selected} current={limit?.limit ?? 2} onClose={() => setShowLimit(false)} onDone={() => { setShowLimit(false); loadDay(); loadMonth(); }} />}
     </>
   );
 }
 
-function RequestModal({ date, canApprove, onClose, onDone }) {
+function RequestModal({ date, capacity, canApprove, onClose, onDone }) {
   const [reason, setReason] = useState("");
   const [approved, setApproved] = useState(false);
   const submit = async () => {
@@ -175,6 +171,7 @@ function RequestModal({ date, canApprove, onClose, onDone }) {
     <Modal open onClose={onClose} title="Time off request" testId="request-modal"
       footer={<Btn onClick={submit} className="w-full" data-testid="submit-request">Submit</Btn>}>
       <p className="text-sm mb-4" style={{ color: "var(--text-secondary)" }}>{longDate(date)}</p>
+      {capacity?.remaining === 0 && <p className="text-sm rounded-2xl p-3 mb-4" style={{ color: "var(--error)", background: "var(--error-soft)" }}>{capacity.limit === 0 ? "This day is closed to time off." : "This day is full."} You can still submit a request for manager review.</p>}
       <Field label="Reason (optional)">
         <textarea className={inputCls} style={inputStyle} rows={3} value={reason} onChange={(e) => setReason(e.target.value)} data-testid="reason-input" />
       </Field>

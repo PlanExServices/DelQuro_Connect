@@ -84,8 +84,8 @@ export default function Profile() {
         {Object.keys(PREF_LABELS).map((k) => (
           <label key={k} className="flex items-center justify-between py-2.5 cursor-pointer">
             <span className="text-sm" style={{ color: "var(--on-surface)" }}>{PREF_LABELS[k]}</span>
-            <button onClick={(e) => { e.preventDefault(); togglePref(k); }} className="relative rounded-full transition-colors" style={{ width: 44, height: 26, background: prefs[k] ? "var(--teal)" : "var(--surface-tertiary)" }} data-testid={`pref-${k}`}>
-              <span className="absolute top-0.5 rounded-full bg-white transition-all" style={{ width: 22, height: 22, left: prefs[k] ? 20 : 2 }} />
+            <button type="button" role="switch" aria-label={PREF_LABELS[k]} aria-checked={prefs[k] !== false} onClick={(e) => { e.preventDefault(); togglePref(k); }} className="relative rounded-full transition-colors" style={{ width: 44, height: 26, background: prefs[k] !== false ? "var(--teal-dark)" : "var(--surface-tertiary)" }} data-testid={`pref-${k}`}>
+              <span className="absolute top-0.5 rounded-full bg-white transition-all" style={{ width: 22, height: 22, left: prefs[k] !== false ? 20 : 2 }} />
             </button>
           </label>
         ))}
@@ -99,7 +99,7 @@ export default function Profile() {
           return (
             <label key={k} className="flex items-center justify-between py-2.5 cursor-pointer">
               <span className="text-sm" style={{ color: "var(--on-surface)" }}>{PRIVACY_LABELS[k]}</span>
-              <button onClick={(e) => { e.preventDefault(); togglePref(k); }} className="relative rounded-full transition-colors" style={{ width: 44, height: 26, background: val ? "var(--teal)" : "var(--surface-tertiary)" }} data-testid={`pref-${k}`}>
+              <button type="button" role="switch" aria-label={PRIVACY_LABELS[k]} aria-checked={val} onClick={(e) => { e.preventDefault(); togglePref(k); }} className="relative rounded-full transition-colors" style={{ width: 44, height: 26, background: val ? "var(--teal-dark)" : "var(--surface-tertiary)" }} data-testid={`pref-${k}`}>
                 <span className="absolute top-0.5 rounded-full bg-white transition-all" style={{ width: 22, height: 22, left: val ? 20 : 2 }} />
               </button>
             </label>

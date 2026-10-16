@@ -4,14 +4,15 @@ import { toast } from "sonner";
 import { BackHeader } from "@/components/BackHeader";
 import { Avatar } from "@/components/Avatar";
 import { Card } from "@/components/kit";
-import { Loading } from "@/components/States";
+import { Loading, ErrorState } from "@/components/States";
 
 const ROLES = ["staff", "manager", "admin"];
 
 export default function Roles() {
   const [members, setMembers] = useState(null);
+  const [error, setError] = useState("");
 
-  const load = () => api.get("/team/members").then(({ data }) => setMembers(data)).catch((e) => toast.error(apiError(e)));
+  const load = () => { setError(""); api.get("/team/members").then(({ data }) => setMembers(data)).catch((e) => setError(apiError(e))); };
   useEffect(() => { load(); }, []);
 
   const changeRole = async (uid, role) => {
@@ -22,7 +23,7 @@ export default function Roles() {
   return (
     <>
       <BackHeader title="Manage Roles" subtitle="Set what each teammate can do" />
-      {members === null ? <Loading /> : (
+      {error ? <ErrorState message={error} onRetry={load} /> : members === null ? <Loading /> : (
         <div className="space-y-3">
           {members.map((m) => (
             <Card key={m.id} className="p-4 flex items-center gap-3" data-testid="role-row">

@@ -7,7 +7,7 @@ import { BackHeader } from "@/components/BackHeader";
 import { Modal } from "@/components/Modal";
 import { Avatar } from "@/components/Avatar";
 import { Card, Btn, Field, inputCls, inputStyle } from "@/components/kit";
-import { Loading } from "@/components/States";
+import { Loading, ErrorState } from "@/components/States";
 
 const BADGE_COLOR = { Legend: "var(--teal)", "Rising Star": "var(--info)", "Team Player": "var(--warning)", "New Teammate": "var(--text-muted)" };
 
@@ -15,12 +15,14 @@ export default function Achievements() {
   const [board, setBoard] = useState(null);
   const [kudos, setKudos] = useState([]);
   const [show, setShow] = useState(false);
+  const [error, setError] = useState("");
 
   const load = async () => {
+    setError("");
     try {
       const [b, k] = await Promise.all([api.get("/achievements"), api.get("/kudos")]);
       setBoard(b.data); setKudos(k.data);
-    } catch (e) { toast.error(apiError(e)); }
+    } catch (e) { setError(apiError(e)); }
   };
   useEffect(() => { load(); }, []);
 
@@ -28,7 +30,7 @@ export default function Achievements() {
     <>
       <BackHeader title="Staff Achievements" subtitle="Celebrate your teammates"
         action={<Btn variant="teal" onClick={() => setShow(true)} data-testid="give-kudos-btn"><Zap size={16} /> Give kudos</Btn>} />
-      {board === null ? <Loading /> : (
+      {error ? <ErrorState message={error} onRetry={load} /> : board === null ? <Loading /> : (
         <>
           <div className="space-y-3 mb-6">
             {board.map((m, i) => (

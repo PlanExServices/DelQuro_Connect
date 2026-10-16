@@ -10,8 +10,8 @@ export const PageHeader = ({ title, subtitle, action }) => (
   </div>
 );
 
-export const Card = ({ children, className = "", ...rest }) => (
-  <div className={`bg-white rounded-3xl card-shadow ${className}`} {...rest}>{children}</div>
+export const Card = ({ children, className = "", as: Component = "div", ...rest }) => (
+  <Component className={`bg-white rounded-3xl card-shadow ${className}`} {...rest}>{children}</Component>
 );
 
 export const Btn = forwardRef(({ variant = "primary", className = "", children, ...rest }, ref) => {
@@ -46,9 +46,9 @@ export const inputCls = "w-full rounded-2xl px-4 py-3 text-[15px] outline-none t
 export const inputStyle = { background: "var(--input-bg)", border: "1.5px solid var(--border-c)", color: "var(--on-surface)" };
 
 export const RoleChip = ({ role }) => {
-  const map = { admin: "var(--teal)", manager: "var(--info)", staff: "var(--text-muted)" };
+  const map = { admin: "var(--teal-dark)", manager: "var(--info)", staff: "var(--text-muted)" };
   return (
-    <span className="text-[11px] font-semibold uppercase tracking-wide px-2.5 py-1 rounded-full" style={{ background: "var(--brand-tertiary)", color: map[role] || "var(--text-muted)" }}>
+    <span className="text-xs font-semibold uppercase tracking-wide px-2.5 py-1 rounded-full" style={{ background: "var(--brand-tertiary)", color: map[role] || "var(--text-muted)" }}>
       {role}
     </span>
   );

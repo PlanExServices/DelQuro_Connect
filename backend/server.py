@@ -4,6 +4,8 @@ import logging
 import re
 import secrets
 import string
+import calendar
+from urllib.parse import urlsplit
 from pathlib import Path
 from datetime import datetime, timezone, timedelta, date as date_cls
 from typing import List, Optional
@@ -44,7 +46,9 @@ mongo_url = require_env("MONGO_URL")
 # up immediately in the logs and in /health/ready.
 client = AsyncIOMotorClient(mongo_url, serverSelectionTimeoutMS=5000)
 db = client[require_env("DB_NAME")]
-require_env("JWT_SECRET")  # auth.get_jwt_secret() reads the same variable
+jwt_secret = require_env("JWT_SECRET")  # auth.get_jwt_secret() reads the same variable
+if jwt_secret == "change-me-to-a-long-random-string":
+    raise RuntimeError("Replace the example JWT_SECRET with a unique random value before starting the server")
 
 app = FastAPI(title="DelQuro Connect API")
 api = APIRouter(prefix="/api")
@@ -300,6 +304,8 @@ class PostBody(BaseModel):
     content: str
     title: Optional[str] = None
     image_id: Optional[str] = None
+    is_protocol: bool = False
+    protocol_version: Optional[str] = None
 
 
 class CommentBody(BaseModel):
@@ -347,13 +353,56 @@ class InviteBody(BaseModel):
     channel: str
     value: Optional[str] = None
     campus: Optional[str] = None
+    location_id: Optional[str] = None
     job_title: Optional[str] = None
     access: str = "staff"
 
 
 class LocationBody(BaseModel):
-    name: str
-    campus_code: str
+    name: str = Field(min_length=2, max_length=120)
+    campus_code: str = Field(min_length=2, max_length=16)
+    website_url: Optional[str] = None
+    logo_url: Optional[str] = None
+    primary_color: str = "#1B2A4A"
+    accent_color: str = "#00A5A8"
+    soft_color: str = "#E8F1F5"
+
+    @field_validator("name")
+    @classmethod
+    def clean_location_name(cls, value):
+        value = value.strip()
+        if len(value) < 2:
+            raise ValueError("Location name is required")
+        return value
+
+    @field_validator("campus_code")
+    @classmethod
+    def clean_campus_code(cls, value):
+        value = value.strip().upper()
+        if not re.fullmatch(r"[A-Z0-9]{2,16}", value):
+            raise ValueError("Campus code must be 2–16 letters or numbers")
+        return value
+
+    @field_validator("website_url", "logo_url")
+    @classmethod
+    def clean_brand_url(cls, value, info):
+        if value is None or not value.strip():
+            return None
+        value = value.strip()
+        if info.field_name == "logo_url" and re.fullmatch(r"/brands/[A-Za-z0-9_.-]+", value):
+            return value
+        parts = urlsplit(value)
+        if len(value) > 2048 or parts.scheme != "https" or not parts.hostname or parts.username or parts.password or any(char.isspace() for char in value):
+            raise ValueError("Use an HTTPS URL for the website or logo")
+        return value
+
+    @field_validator("primary_color", "accent_color", "soft_color")
+    @classmethod
+    def clean_brand_color(cls, value):
+        value = value.strip().upper()
+        if not re.fullmatch(r"#[0-9A-F]{6}", value):
+            raise ValueError("Brand colors must be six-digit hex values")
+        return value
 
 
 # ================================================================ AUTH ROUTES
@@ -417,22 +466,32 @@ async def register(body: RegisterBody):
     if body.bootstrap_code:
         if any_admin is not None:
             raise HTTPException(status_code=400, detail="Workspace is already set up. Please sign in.")
-        if body.bootstrap_code != os.environ.get("ADMIN_BOOTSTRAP_CODE"):
+        configured_code = os.environ.get("ADMIN_BOOTSTRAP_CODE", "")
+        if configured_code == "DELQURO-SETUP-2026":
+            raise HTTPException(status_code=503, detail="Replace the example setup code before creating an admin")
+        if not configured_code or not secrets.compare_digest(body.bootstrap_code, configured_code):
             raise HTTPException(status_code=400, detail="Invalid setup code")
         role = "admin"
-    elif body.code:
-        invite = await db.invites.find_one({"code": body.code.upper()})
+    elif body.code and body.code.strip():
+        invite = await db.invites.find_one({"code": body.code.strip().upper()})
         if not invite:
             raise HTTPException(status_code=400, detail="Invalid invite code")
         if invite.get("expires_at") and datetime.fromisoformat(invite["expires_at"]) < datetime.now(timezone.utc):
             raise HTTPException(status_code=400, detail="This invite code has expired")
         if invite.get("used"):
             raise HTTPException(status_code=400, detail="This invite code has already been used")
+        claimed = await db.invites.update_one(
+            {"_id": invite["_id"], "used": False},
+            {"$set": {"used": True, "used_at": now_iso()}},
+        )
+        if claimed.matched_count != 1:
+            raise HTTPException(status_code=400, detail="This invite code has already been used")
         role = invite.get("access", "staff")
         campus = invite.get("campus") or campus
         job_title = invite.get("job_title") or job_title
         location_id = invite.get("location_id")
-        await db.invites.update_one({"_id": invite["_id"]}, {"$set": {"used": True, "used_at": now_iso()}})
+    else:
+        raise HTTPException(status_code=400, detail="An invitation code is required")
 
     doc = {
         "email": email,
@@ -647,6 +706,7 @@ async def set_location(uid: str, location_id: str, user: dict = Depends(require(
 # ================================================================ HUDDLE
 async def serialize_post(p: dict, user_id: str) -> dict:
     likes = p.get("likes", [])
+    acknowledgments = p.get("acknowledged_by", [])
     comment_count = await db.comments.count_documents({"post_id": str(p["_id"])})
     return {
         "id": str(p["_id"]),
@@ -656,6 +716,10 @@ async def serialize_post(p: dict, user_id: str) -> dict:
         "title": p.get("title"),
         "content": p.get("content"),
         "image_id": p.get("image_id"),
+        "is_protocol": p.get("is_protocol", False),
+        "protocol_version": p.get("protocol_version"),
+        "acknowledged": user_id in acknowledgments,
+        "acknowledgment_count": len(acknowledgments),
         "like_count": len(likes),
         "liked": user_id in likes,
         "comment_count": comment_count,
@@ -671,6 +735,8 @@ async def list_posts(user: dict = Depends(get_current_user)):
 
 @api.post("/posts")
 async def create_post(body: PostBody, user: dict = Depends(require("post_huddle"))):
+    if body.is_protocol and (not (body.title or "").strip() or not (body.protocol_version or "").strip()):
+        raise HTTPException(status_code=400, detail="A protocol needs a title and version")
     doc = {
         "author_id": str(user["_id"]),
         "author_name": user.get("name"),
@@ -678,12 +744,25 @@ async def create_post(body: PostBody, user: dict = Depends(require("post_huddle"
         "title": body.title,
         "content": body.content,
         "image_id": body.image_id,
+        "is_protocol": body.is_protocol,
+        "protocol_version": body.protocol_version.strip() if body.is_protocol else None,
+        "acknowledged_by": [],
         "likes": [],
         "created_at": now_iso(),
     }
     res = await db.posts.insert_one(doc)
     doc["_id"] = res.inserted_id
     return await serialize_post(doc, str(user["_id"]))
+
+
+@api.post("/posts/{pid}/acknowledge")
+async def acknowledge_protocol(pid: str, user: dict = Depends(get_current_user)):
+    p = await db.posts.find_one({"_id": ObjectId(pid)})
+    if not p or not p.get("is_protocol"):
+        raise HTTPException(status_code=404, detail="Protocol not found")
+    await db.posts.update_one({"_id": ObjectId(pid)}, {"$addToSet": {"acknowledged_by": str(user["_id"])}})
+    fresh = await db.posts.find_one({"_id": ObjectId(pid)})
+    return await serialize_post(fresh, str(user["_id"]))
 
 
 @api.delete("/posts/{pid}")
@@ -844,6 +923,30 @@ async def get_daylimit(date: str, user: dict = Depends(get_current_user)):
     return {"date": date, "limit": limit, "approved": approved, "remaining": max(limit - approved, 0)}
 
 
+@api.get("/daylimit/month")
+async def get_month_capacity(year: int, month: int, user: dict = Depends(get_current_user)):
+    if not 1 <= month <= 12 or not 1 <= year <= 9999:
+        raise HTTPException(status_code=400, detail="Invalid month")
+    prefix = f"{year:04d}-{month:02d}"
+    overrides = await db.daylimits.find({"date": {"$regex": f"^{prefix}"}}).to_list(31)
+    requests = await db.timeoff.find({"date": {"$regex": f"^{prefix}"}}).to_list(1000)
+    limits = {item["date"]: item["limit"] for item in overrides}
+    counts = {}
+    for item in requests:
+        day = counts.setdefault(item["date"], {"approved": 0, "pending": 0})
+        if item.get("status") in day:
+            day[item["status"]] += 1
+    days = []
+    for day_number in range(1, calendar.monthrange(year, month)[1] + 1):
+        day = f"{prefix}-{day_number:02d}"
+        limit = limits.get(day, SYSTEM_DEFAULT_DAY_LIMIT)
+        approved = counts.get(day, {}).get("approved", 0)
+        days.append({"date": day, "limit": limit, "approved": approved,
+                     "pending": counts.get(day, {}).get("pending", 0),
+                     "remaining": max(limit - approved, 0)})
+    return {"default_limit": SYSTEM_DEFAULT_DAY_LIMIT, "days": days}
+
+
 @api.put("/daylimit")
 async def set_daylimit(body: DayLimitBody, user: dict = Depends(require("set_daylimit"))):
     await db.daylimits.update_one({"date": body.date}, {"$set": {"limit": body.limit}}, upsert=True)
@@ -861,13 +964,31 @@ def serialize_schedule(s: dict) -> dict:
         "file_name": s.get("file_name"),
         "content_type": s.get("content_type"),
         "size": s.get("size"),
+        "effective_start": s.get("effective_start"),
+        "effective_end": s.get("effective_end"),
+        "campus": s.get("campus"),
+        "department": s.get("department"),
         "created_at": s.get("created_at"),
     }
 
 
 @api.get("/schedules")
 async def list_schedules(period: str, user: dict = Depends(get_current_user)):
-    items = await db.schedules.find({"period": period}).sort("created_at", -1).to_list(500)
+    if period not in ("current", "upcoming", "previous", "all"):
+        raise HTTPException(status_code=400, detail="Invalid schedule period")
+    items = await db.schedules.find().sort("created_at", -1).to_list(500)
+    if period != "all":
+        today = datetime.now(timezone.utc).date().isoformat()
+        def active_period(schedule):
+            start, end = schedule.get("effective_start"), schedule.get("effective_end")
+            if start and end:
+                if today < start:
+                    return "upcoming"
+                if today > end:
+                    return "previous"
+                return "current"
+            return schedule.get("period")
+        items = [item for item in items if active_period(item) == period]
     return [serialize_schedule(s) for s in items]
 
 
@@ -876,8 +997,24 @@ async def upload_schedule(
     file: UploadFile = File(...),
     title: str = Form(...),
     period: str = Form(...),
+    effective_start: Optional[str] = Form(None),
+    effective_end: Optional[str] = Form(None),
+    campus: Optional[str] = Form(None),
+    department: Optional[str] = Form(None),
     user: dict = Depends(require("manage_schedules")),
 ):
+    if period not in ("current", "upcoming", "previous"):
+        raise HTTPException(status_code=400, detail="Invalid schedule period")
+    if bool(effective_start) != bool(effective_end):
+        raise HTTPException(status_code=400, detail="Provide both effective dates")
+    if effective_start:
+        try:
+            effective_start = date_cls.fromisoformat(effective_start).isoformat()
+            effective_end = date_cls.fromisoformat(effective_end).isoformat()
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Effective dates must use YYYY-MM-DD")
+        if effective_end < effective_start:
+            raise HTTPException(status_code=400, detail="End date must be on or after start date")
     content = await file.read()
     ensure_upload_size(content)
     fdoc = {
@@ -895,6 +1032,10 @@ async def upload_schedule(
         "file_name": file.filename,
         "content_type": fdoc["content_type"],
         "size": len(content),
+        "effective_start": effective_start,
+        "effective_end": effective_end,
+        "campus": (campus or "").strip() or None,
+        "department": (department or "").strip() or None,
         "uploader_id": str(user["_id"]),
         "created_at": now_iso(),
     }
@@ -972,13 +1113,19 @@ class ChatHub:
 hub = ChatHub()
 
 
-async def chat_snippet(c: dict) -> dict:
+async def chat_snippet(c: dict, user_id: Optional[str] = None) -> dict:
     last = await db.messages.find({"chat_id": str(c["_id"])}).sort("created_at", -1).limit(1).to_list(1)
     last_message, last_sender = None, None
     if last:
         m = last[0]
         last_sender = m.get("sender_name")
         last_message = "\U0001F4F7 Photo" if (m.get("image_id") and not m.get("text")) else m.get("text")
+    unread_count = 0
+    if user_id:
+        unread_count = await db.messages.count_documents({
+            "chat_id": str(c["_id"]), "sender_id": {"$ne": user_id},
+            "read_by": {"$ne": user_id},
+        })
     return {
         "id": str(c["_id"]),
         "name": c.get("name"),
@@ -988,6 +1135,7 @@ async def chat_snippet(c: dict) -> dict:
         "access": c.get("access"),
         "last_message": last_message,
         "last_sender": last_sender,
+        "unread_count": unread_count,
         "created_at": c.get("created_at"),
     }
 
@@ -1002,7 +1150,7 @@ def can_access_chat(c: dict, user: dict) -> bool:
 async def list_chats(user: dict = Depends(get_current_user)):
     uid = str(user["_id"])
     chats = await db.chats.find({"$or": [{"is_everyone": True}, {"member_ids": uid}]}).to_list(500)
-    out = [await chat_snippet(c) for c in chats]
+    out = [await chat_snippet(c, uid) for c in chats]
     out.sort(key=lambda x: x.get("created_at") or "", reverse=True)
     return out
 
@@ -1235,6 +1383,7 @@ def serialize_invite(i: dict) -> dict:
         "channel": i.get("channel"),
         "value": i.get("value"),
         "campus": i.get("campus"),
+        "location_id": i.get("location_id"),
         "job_title": i.get("job_title"),
         "access": i.get("access"),
         "used": i.get("used", False),
@@ -1253,11 +1402,30 @@ async def list_invites(user: dict = Depends(require("invite"))):
 async def create_invite(body: InviteBody, user: dict = Depends(require("invite"))):
     if body.access not in ROLES:
         raise HTTPException(status_code=400, detail="Invalid access role")
+    if body.access == "admin" and user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Only admins can invite admins")
+    campus = body.campus.strip() if body.campus else None
+    location_id = None
+    if body.location_id:
+        try:
+            location = await db.locations.find_one({"_id": ObjectId(body.location_id)})
+        except Exception:
+            location = None
+        if not location:
+            raise HTTPException(status_code=404, detail="Campus not found")
+    elif campus:
+        location = await db.locations.find_one({"campus_code": campus.upper()}) or await db.locations.find_one({"name": campus})
+    else:
+        location = None
+    if location:
+        campus = location["name"]
+        location_id = str(location["_id"])
     doc = {
         "code": gen_code(6),
         "channel": body.channel,
         "value": body.value,
-        "campus": body.campus,
+        "campus": campus,
+        "location_id": location_id,
         "job_title": body.job_title,
         "access": body.access,
         "used": False,
@@ -1280,17 +1448,62 @@ async def delete_invite(iid: str, user: dict = Depends(require("invite"))):
 
 
 # ================================================================ LOCATIONS
+def serialize_location(location: dict) -> dict:
+    return {
+        "id": str(location["_id"]),
+        "name": location.get("name"),
+        "campus_code": location.get("campus_code"),
+        "website_url": location.get("website_url"),
+        "logo_url": location.get("logo_url"),
+        "primary_color": location.get("primary_color", "#1B2A4A"),
+        "accent_color": location.get("accent_color", "#00A5A8"),
+        "soft_color": location.get("soft_color", "#E8F1F5"),
+    }
+
+
+@api.get("/public/campuses/{code}")
+async def public_campus_brand(code: str):
+    normalized = code.strip().upper()
+    if not re.fullmatch(r"[A-Z0-9]{2,16}", normalized):
+        raise HTTPException(status_code=404, detail="Campus not found")
+    location = await db.locations.find_one({"campus_code": normalized})
+    if not location:
+        raise HTTPException(status_code=404, detail="Campus not found")
+    brand = serialize_location(location)
+    return {key: brand[key] for key in ("name", "campus_code", "website_url", "logo_url", "primary_color", "accent_color", "soft_color")}
+
+
 @api.get("/locations")
 async def list_locations(user: dict = Depends(get_current_user)):
     items = await db.locations.find().to_list(500)
-    return [{"id": str(l["_id"]), "name": l.get("name"), "campus_code": l.get("campus_code")} for l in items]
+    return [serialize_location(location) for location in items]
 
 
 @api.post("/locations")
 async def create_location(body: LocationBody, user: dict = Depends(require("manage_locations"))):
-    doc = {"name": body.name, "campus_code": body.campus_code, "created_at": now_iso()}
+    if await db.locations.find_one({"campus_code": body.campus_code}):
+        raise HTTPException(status_code=409, detail="Campus code already exists")
+    doc = {**body.model_dump(), "created_at": now_iso()}
     res = await db.locations.insert_one(doc)
-    return {"id": str(res.inserted_id), "name": body.name, "campus_code": body.campus_code}
+    doc["_id"] = res.inserted_id
+    return serialize_location(doc)
+
+
+@api.put("/locations/{lid}")
+async def update_location(lid: str, body: LocationBody, user: dict = Depends(require("manage_locations"))):
+    try:
+        location_id = ObjectId(lid)
+    except Exception:
+        raise HTTPException(status_code=404, detail="Location not found")
+    existing = await db.locations.find_one({"_id": location_id})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Location not found")
+    duplicate = await db.locations.find_one({"campus_code": body.campus_code})
+    if duplicate and duplicate["_id"] != location_id:
+        raise HTTPException(status_code=409, detail="Campus code already exists")
+    updates = {**body.model_dump(), "updated_at": now_iso()}
+    await db.locations.update_one({"_id": location_id}, {"$set": updates})
+    return serialize_location({**existing, **updates})
 
 
 # ---------------------------------------------------------------- health
@@ -1336,7 +1549,7 @@ async def health_ready():
 # Note: browsers reject `Access-Control-Allow-Origin: *` together with
 # credentials, so credentials are only enabled for explicit origin lists. This
 # app authenticates with Bearer tokens (not cookies), so nothing is lost.
-cors_origins = [o.strip() for o in os.environ.get("CORS_ORIGINS", "*").split(",") if o.strip()]
+cors_origins = [o.strip() for o in os.environ.get("CORS_ORIGINS", "").split(",") if o.strip()]
 app.add_middleware(NormalizePathMiddleware)
 app.add_middleware(
     CORSMiddleware,

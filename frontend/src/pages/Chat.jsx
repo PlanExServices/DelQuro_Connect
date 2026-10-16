@@ -6,16 +6,18 @@ import { api, apiError } from "@/lib/api";
 import { Avatar } from "@/components/Avatar";
 import { Modal } from "@/components/Modal";
 import { PageHeader, Card, Btn, Field, inputCls, inputStyle } from "@/components/kit";
-import { Loading, EmptyState } from "@/components/States";
+import { Loading, EmptyState, ErrorState } from "@/components/States";
 
 export default function Chat() {
   const navigate = useNavigate();
   const [chats, setChats] = useState(null);
+  const [error, setError] = useState(null);
   const [showNew, setShowNew] = useState(false);
 
   const load = useCallback(async () => {
+    setError(null);
     try { const { data } = await api.get("/chats"); setChats(data); }
-    catch (e) { toast.error(apiError(e)); }
+    catch (e) { setError(apiError(e)); }
   }, []);
   useEffect(() => { load(); }, [load]);
 
@@ -24,12 +26,12 @@ export default function Chat() {
       <PageHeader title="Chat" subtitle="Team conversations"
         action={<Btn onClick={() => setShowNew(true)} data-testid="new-chat-btn"><Plus size={16} /> New group</Btn>} />
 
-      {chats === null ? <Loading /> : chats.length === 0 ? (
+      {error ? <ErrorState message={error} onRetry={load} /> : chats === null ? <Loading /> : chats.length === 0 ? (
         <EmptyState icon={MessageSquare} title="No conversations yet" hint="Start a group to chat with your team." />
       ) : (
         <div className="space-y-3">
           {chats.map((c) => (
-            <Card key={c.id} onClick={() => navigate(`/chat/${c.id}`)} className="p-4 flex items-center gap-3 cursor-pointer hover:card-shadow-lg transition-shadow" data-testid="chat-row">
+            <Card as="button" type="button" key={c.id} onClick={() => navigate(`/chat/${c.id}`)} className="p-4 flex items-center gap-3 w-full text-left cursor-pointer hover:card-shadow-lg transition-shadow" data-testid="chat-row">
               <div className="grid place-items-center rounded-full shrink-0" style={{ width: 46, height: 46, background: "var(--brand-tertiary)" }}>
                 {c.is_everyone ? <Users size={20} color="var(--teal)" /> : <User size={20} color="var(--teal)" />}
               </div>
@@ -39,6 +41,7 @@ export default function Chat() {
                   {c.last_message ? `${c.last_sender ? c.last_sender + ": " : ""}${c.last_message}` : (c.description || "No messages yet")}
                 </p>
               </div>
+              {c.unread_count > 0 && <span className="rounded-full px-2 py-1 text-xs font-semibold text-white" style={{ background: "var(--burgundy)" }} aria-label={`${c.unread_count} unread messages`}>{c.unread_count}</span>}
               <ChevronRight size={20} color="var(--text-muted)" />
             </Card>
           ))}
@@ -56,9 +59,11 @@ function NewChatModal({ onClose, onDone }) {
   const [everyone, setEveryone] = useState(true);
   const [members, setMembers] = useState([]);
   const [team, setTeam] = useState([]);
+  const [teamError, setTeamError] = useState("");
   const [busy, setBusy] = useState(false);
 
-  useEffect(() => { api.get("/team/members").then(({ data }) => setTeam(data)).catch(() => {}); }, []);
+  const loadTeam = () => { setTeamError(""); api.get("/team/members").then(({ data }) => setTeam(data)).catch((e) => setTeamError(apiError(e))); };
+  useEffect(() => { loadTeam(); }, []);
 
   const toggle = (id) => setMembers((m) => m.includes(id) ? m.filter((x) => x !== id) : [...m, id]);
 
@@ -86,7 +91,7 @@ function NewChatModal({ onClose, onDone }) {
         <button onClick={() => setEveryone(false)} className="flex-1 py-2.5 rounded-2xl text-sm font-medium" style={{ background: !everyone ? "var(--brand)" : "var(--surface-tertiary)", color: !everyone ? "#fff" : "var(--brand)" }} data-testid="chat-custom">Custom group</button>
       </div>
       {!everyone && (
-        <div className="max-h-56 overflow-y-auto space-y-1.5 mb-2">
+        teamError ? <ErrorState message={teamError} onRetry={loadTeam} /> : team.length === 0 ? <Loading label="Loading teammates…" /> : <div className="max-h-56 overflow-y-auto space-y-1.5 mb-2">
           {team.map((m) => (
             <label key={m.id} className="flex items-center gap-3 p-2 rounded-xl cursor-pointer" style={{ background: members.includes(m.id) ? "var(--brand-tertiary)" : "transparent" }}>
               <input type="checkbox" checked={members.includes(m.id)} onChange={() => toggle(m.id)} />

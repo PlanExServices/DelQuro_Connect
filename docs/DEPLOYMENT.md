@@ -21,7 +21,7 @@ MongoDB resource and you have backed up everything.
 - Push this repo to GitHub (already done for the `arena/…` branch; merge the PR
   into the branch Coolify watches — normally `main`).
 - Have your Coolify server connected to GitHub.
-- Generate a JWT secret once: `openssl rand -base64 48`.
+- Generate a JWT secret once: `openssl rand -base64 48`. Generate a separate setup code with `openssl rand -hex 16`.
 
 ---
 
@@ -57,7 +57,7 @@ Add on the application's **Environment Variables** page (see `.env.example`):
 | `MONGO_URL` | the internal connection string from A1 (possibly `$DELQURO_DB` variable references) |
 | `DB_NAME` | `delquro_connect` |
 | `JWT_SECRET` | your `openssl rand -base64 48` value |
-| `ADMIN_BOOTSTRAP_CODE` | e.g. `DELQURO-SETUP-2026` — needed to create the first admin |
+| `ADMIN_BOOTSTRAP_CODE` | a unique random setup code — needed to create the first admin; the published example code is rejected |
 | `CORS_ORIGINS` | leave unset (same origin) |
 | `PORT` | `8000` |
 
@@ -145,7 +145,7 @@ Backend: HTTP `8000` `/health`. Frontend: HTTP `80` `/`.
 | `DB_NAME` | ✅ | — | Database name (e.g. `delquro_connect`) |
 | `JWT_SECRET` | ✅ | — | Signs session tokens; 32+ random chars; rotating it logs everyone out |
 | `ADMIN_BOOTSTRAP_CODE` | first run | — | Enables creating the first admin at `/setup` |
-| `CORS_ORIGINS` | split topology | `*` | Comma-separated allowed browser origins |
+| `CORS_ORIGINS` | split topology | empty | Comma-separated allowed browser origins |
 | `PORT` | no | `8000` | Port uvicorn binds (keep in sync with Ports Exposes) |
 | `FRONTEND_BUILD_DIR` | no | `/app/frontend_build` in the all-in-one image | Where the SPA build lives; if missing, the API runs alone |
 

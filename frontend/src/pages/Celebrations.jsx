@@ -1,12 +1,11 @@
 import { useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
-import { toast } from "sonner";
 import { Gift, Award } from "lucide-react";
 import { api, apiError } from "@/lib/api";
 import { BackHeader } from "@/components/BackHeader";
 import { Avatar } from "@/components/Avatar";
 import { Card } from "@/components/kit";
-import { Loading, EmptyState } from "@/components/States";
+import { Loading, EmptyState, ErrorState } from "@/components/States";
 
 const CONFIG = {
   birthdays: {
@@ -29,18 +28,23 @@ export default function Celebrations() {
   const { type } = useParams();
   const cfg = CONFIG[type] || CONFIG.birthdays;
   const [items, setItems] = useState(null);
+  const [error, setError] = useState("");
 
-  useEffect(() => {
-    setItems(null);
+  const load = () => {
+    setItems(null); setError("");
     api.get(`${cfg.endpoint}?window=366`)
       .then(({ data }) => setItems(data))
-      .catch((e) => { toast.error(apiError(e)); setItems([]); });
+      .catch((e) => setError(apiError(e)));
+  };
+
+  useEffect(() => {
+    load();
   }, [type]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <>
       <BackHeader title={cfg.title} subtitle={cfg.subtitle} to="/huddle" />
-      {items === null ? <Loading /> : items.length === 0 ? (
+      {error ? <ErrorState message={error} onRetry={load} /> : items === null ? <Loading /> : items.length === 0 ? (
         <EmptyState icon={cfg.icon} title="Nothing coming up" hint="Add birthdays and start dates in team profiles to see them here." />
       ) : (
         <div className="space-y-3">
