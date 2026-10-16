@@ -34,3 +34,11 @@ This file is the durable project brief for future work in this repository. Updat
 - The owner specified **COMMON** as Commonwealth Animal Hospital's short company/campus ID tag. A campus should use its own website branding and logo. Other hospitals should follow the same configurable format; COMMON is a reference profile, not the universal brand. See [campus branding](CAMPUS_BRANDING.md).
 - **Tools and Settings are one destination** with a gear entry point. Chat remains a main mobile tab; the Huddle tab remains mandatory.
 - The owner's veterinary workplace survey is at [survey.delqurolabs.app](https://survey.delqurolabs.app/). It asks about one real shift moment, the blocker, effects, and workarounds. Its questions are research input; no synthetic response was submitted during review. The originally provided `servey` spelling failed certificate validation.
+
+## Production deployment (October 16, 2026)
+
+- The owner supplied `coolify.delquro.com`; its DelQuro Connect production application automatically deploys GitHub `main`.
+- Live service: `https://delquroconnect.delqurolabs.app`. COMMON sign-in: `/login?campus=COMMON`.
+- The production COMMON campus profile is configured with the approved reference branding. No teammate accounts were created or reassigned during deployment.
+- The frontend and backend run in one container. `REACT_APP_BACKEND_URL` must be empty at build time; the former `api.delqurolabs.app` value used the wrong API.
+- An inherited Emergent/PostHog session-recording script was removed during release verification. Browser zoom is enabled.

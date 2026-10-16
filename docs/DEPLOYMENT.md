@@ -1,5 +1,15 @@
 # Deploying DelQuro Connect (Coolify, Docker, any host)
 
+## Existing production service
+
+- Console: `https://coolify.delquro.com`
+- Project: **DelQuro Connect**, environment **production**
+- Application ID: `vlxtcfhogi0swfpxfemn0iye`
+- Live origin: `https://delquroconnect.delqurolabs.app`
+- GitHub `main` deploys automatically through a webhook.
+- This is the single-application topology below. Keep the production build variable `REACT_APP_BACKEND_URL` empty so the browser uses this service's `/api`. An old value of `https://api.delqurolabs.app` sent the UI to a different API and prevented COMMON branding from loading.
+- COMMON's branding profile is stored in the production database. Demo seeding remains development-only.
+
 Two supported topologies — pick one:
 
 | | **A. Single application** (recommended) | **B. Split frontend + backend** |
