@@ -14,12 +14,15 @@ export default function Login() {
   const navigate = useNavigate();
   const [form, setForm] = useState({ email: "", password: "" });
   const [busy, setBusy] = useState(false);
+  const [needsSetup, setNeedsSetup] = useState(false);
 
   useEffect(() => {
+    let active = true;
     api.get("/auth/status").then(({ data }) => {
-      if (data.needs_setup) navigate("/setup", { replace: true });
+      if (active) setNeedsSetup(data.needs_setup);
     }).catch(() => {});
-  }, [navigate]);
+    return () => { active = false; };
+  }, []);
 
   const set = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }));
 
@@ -58,9 +61,16 @@ export default function Login() {
               {busy ? "Signing in…" : "Sign In"}
             </Btn>
           </form>
-          <p className="text-sm text-center mt-6" style={{ color: "var(--text-secondary)" }}>
-            New here? <Link to="/register" className="font-semibold" style={{ color: "var(--teal-dark)" }}>Create an account</Link>
-          </p>
+          {needsSetup ? (
+            <div className="text-sm text-center mt-6" style={{ color: "var(--text-secondary)" }}>
+              <p>This workspace needs its first administrator.</p>
+              <Link to="/setup" className="inline-block mt-2 font-semibold" style={{ color: "var(--teal-dark)" }}>Set up your workspace</Link>
+            </div>
+          ) : (
+            <p className="text-sm text-center mt-6" style={{ color: "var(--text-secondary)" }}>
+              Have an invitation? <Link to="/register" className="font-semibold" style={{ color: "var(--teal-dark)" }}>Create an account</Link>
+            </p>
+          )}
         </div>
       </div>
     </div>

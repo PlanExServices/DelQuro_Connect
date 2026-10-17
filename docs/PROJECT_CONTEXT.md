@@ -42,3 +42,4 @@ This file is the durable project brief for future work in this repository. Updat
 - The production COMMON campus profile is configured with the approved reference branding. No teammate accounts were created or reassigned during deployment.
 - The frontend and backend run in one container. `REACT_APP_BACKEND_URL` must be empty at build time; the former `api.delqurolabs.app` value used the wrong API.
 - An inherited Emergent/PostHog session-recording script was removed during release verification. Browser zoom is enabled.
+- Sign-in remains accessible when the service needs its first administrator. Show a separate setup option; do not redirect `/login` back to `/setup`, which traps the setup page's Sign in link in a loop.
