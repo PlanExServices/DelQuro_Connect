@@ -19,8 +19,8 @@ python-multipart>=0.0.9
 websockets>=12.0
 
 # --- database (MongoDB) ---
-motor==3.3.1
-pymongo==4.6.3
+motor==3.7.1
+pymongo==4.18.3
 
 # --- auth / crypto ---
 pyjwt>=2.10.1
