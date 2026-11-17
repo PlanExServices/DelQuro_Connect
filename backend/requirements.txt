@@ -9,7 +9,8 @@
 # install fail.
 
 # --- web framework ---
-fastapi==0.110.1
+fastapi==0.163.1
+starlette==1.10.0
 uvicorn==0.25.0
 python-multipart>=0.0.9
 # Required for the realtime chat WebSocket (/api/ws/chat/{cid}). Without a WS
