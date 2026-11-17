@@ -184,7 +184,7 @@ async def seed_demo() -> None:
 if IN_MEMORY and os.environ.get("SEED_DEMO") == "1":
     # Seeding runs on the server's own event loop, right after the app's
     # startup handlers (index creation) have run.
-    server.app.add_event_handler("startup", seed_demo)
+    server.app.on_event("startup")(seed_demo)
 
 
 if __name__ == "__main__":

@@ -43,3 +43,11 @@ This file is the durable project brief for future work in this repository. Updat
 - The frontend and backend run in one container. `REACT_APP_BACKEND_URL` must be empty at build time; the former `api.delqurolabs.app` value used the wrong API.
 - An inherited Emergent/PostHog session-recording script was removed during release verification. Browser zoom is enabled.
 - Sign-in remains accessible when the service needs its first administrator. Show a separate setup option; do not redirect `/login` back to `/setup`, which traps the setup page's Sign in link in a loop.
+
+## Framework security update prepared (November 17, 2026)
+
+- Prepared FastAPI 0.163.1 and Starlette 1.10.0 pins for the Coolify finding requiring Starlette 1.3.1 or later. The local development seeder now registers its startup handler through the same `on_event` API already used by the server.
+- Local checks on Python 3.12.10 passed dependency resolution, `pip check`, compilation, the registration-gate smoke, all 11 `test_changes.py` checks, and five of six `test_projections.py` checks. Each test module used the configured two xdist workers against an isolated in-memory loopback server. Running both modules together races their shared admin birthday fields.
+- The remaining projection test expects registration without an invitation to succeed. It fails with the same invitation-required response on both the original FastAPI 0.110.1 / Starlette 0.37.2 stack and the upgraded stack. The existing invitation requirement remains in force.
+- Focused local probes passed all health/readiness aliases, anonymous API protection, fixture login and account lookup, anonymous WebSocket denial, authenticated typing and message broadcasts, and the documented six-member development seeder startup.
+- Production deployment, a Linux Python 3.11 container build, and production user sign-in have not been verified for this update. The broader authentication work in open PR #4 is separate from this dependency change.

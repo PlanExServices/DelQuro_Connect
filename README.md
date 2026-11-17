@@ -94,7 +94,7 @@ campus assignment, not hospital-by-hospital data isolation.
 - `react-day-picker` (calendar), `date-fns`
 
 ### Backend
-- FastAPI 0.110.1, Uvicorn 0.25.0 (+ `websockets` for the chat WebSocket)
+- FastAPI 0.163.1, Starlette 1.10.0, Uvicorn 0.25.0 (+ `websockets` for the chat WebSocket)
 - MongoDB (motor 3.3.1) + `pymongo`
 - JWT (`pyjwt`), bcrypt (`bcrypt`), `python-dotenv`
 - CORS middleware, file upload via FormData, optional static hosting of the
