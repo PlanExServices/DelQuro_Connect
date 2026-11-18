@@ -60,7 +60,8 @@ function Workspace({ session }: { session: ReturnType<typeof useSession> }) {
           <View style={{ flex: 1 }} key={revision}>{inbox[active]}</View>
           <View style={styles.tabs} accessibilityRole="tablist">
             {tabs.map(tab => (
-              <Pressable key={tab.name} accessibilityRole="tab" accessibilityState={{ selected: tab.name === active }}
+              <Pressable key={tab.name} accessibilityRole="tab" accessibilityLabel={tab.name}
+                accessibilityState={{ selected: tab.name === active }}
                 onPress={() => setActive(tab.name)} style={[styles.tab, tab.name === active && styles.activeTab]}>
                 <Icon name={tab.icon} color={tab.name === active ? colors.teal : colors.muted} />
                 <Text style={[styles.tabText, tab.name === active && { color: colors.teal }]}>{tab.name}</Text>

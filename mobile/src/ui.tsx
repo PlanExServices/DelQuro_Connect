@@ -38,7 +38,7 @@ export const ui = StyleSheet.create({
 type IconName = ComponentProps<typeof Ionicons>['name'];
 
 export function Icon({ name, size = 20, color = colors.teal }: { name: IconName; size?: number; color?: string }) {
-  return <Ionicons name={name} size={size} color={color} accessible={false} />;
+  return <Ionicons name={name} size={size} color={color} accessible={false} aria-hidden />;
 }
 
 export function Button({ label, onPress, disabled, danger, quiet, icon, accessibilityLabel }: {
@@ -48,7 +48,7 @@ export function Button({ label, onPress, disabled, danger, quiet, icon, accessib
   const fill = danger ? colors.danger : colors.teal;
   const ink = quiet ? fill : colors.card;
   return (
-    <Pressable accessibilityRole="button" accessibilityLabel={accessibilityLabel}
+    <Pressable accessibilityRole="button" accessibilityLabel={accessibilityLabel ?? label}
       accessibilityState={{ disabled: Boolean(disabled) }} onPress={onPress} disabled={disabled}
       style={({ pressed }) => [styles.button, {
         backgroundColor: quiet ? colors.card : fill, borderColor: quiet ? colors.line : fill,
