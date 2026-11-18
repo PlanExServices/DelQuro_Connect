@@ -11,7 +11,8 @@ from datetime import datetime, timezone, timedelta, date as date_cls
 from typing import List, Literal, Optional
 
 from fastapi import FastAPI, APIRouter, HTTPException, Request, Depends, UploadFile, File, Form, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, Response
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
@@ -65,6 +66,7 @@ logger = logging.getLogger("delquro")
 # MongoDB documents are capped at 16 MB, so reject oversized uploads up front
 # with a clear 413 instead of letting the insert blow up with a 500.
 MAX_UPLOAD_BYTES = 15 * 1024 * 1024
+CHAT_SOCKET_PROTOCOL = "connect-chat"
 
 # Login brute-force protection
 LOCKOUT_ATTEMPTS = 5
@@ -92,6 +94,23 @@ class NormalizePathMiddleware:
             scope = dict(scope)
             scope["path"] = re.sub(r"/{2,}", "/", scope["path"])
         await self.app(scope, receive, send)
+
+
+@app.middleware("http")
+async def protect_web_responses(request: Request, call_next):
+    response = await call_next(request)
+    response.headers.setdefault("Referrer-Policy", "no-referrer")
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    if request.url.path.startswith("/api/"):
+        response.headers.setdefault("Cache-Control", "private, no-store")
+    return response
+
+
+@app.exception_handler(RequestValidationError)
+async def redact_validation_inputs(request: Request, exc: RequestValidationError):
+    errors = [{"type": error["type"], "loc": error["loc"], "msg": error["msg"]} for error in exc.errors()]
+    return JSONResponse(status_code=422, content={"detail": errors})
 
 
 def ensure_upload_size(content: bytes) -> None:
@@ -209,6 +228,9 @@ async def authenticated_user(payload: dict, *, allow_mobile: bool) -> dict:
     user = await db.users.find_one({"_id": ObjectId(payload["sub"])})
     if not user or user.get("suspended"):
         raise HTTPException(status_code=401, detail="Account unavailable")
+    # The existing mobile session version now also invalidates browser tokens.
+    if payload.get("ver", 0) != user.get("mobile_session_version", 0):
+        raise HTTPException(status_code=401, detail="Session expired. Sign in again.")
     if "sid" in payload and (
         not allow_mobile or not await session_is_active(db, payload["sid"], user)
     ):
@@ -219,9 +241,7 @@ async def authenticated_user(payload: dict, *, allow_mobile: bool) -> dict:
 async def get_current_user(request: Request) -> dict:
     token = token_from_request(request)
     payload = decode_token(token)
-    user = await authenticated_user(
-        payload, allow_mobile=request.headers.get("Authorization", "").startswith("Bearer "),
-    )
+    user = await authenticated_user(payload, allow_mobile=True)
     request.state.mobile_session = "sid" in payload
     deleting = request.method == "DELETE" and request.url.path == "/api/me"
     checking_account = request.method == "GET" and request.url.path == "/api/auth/me"
@@ -230,8 +250,8 @@ async def get_current_user(request: Request) -> dict:
     return user
 
 
-def require_mobile_terms(request: Request, user: dict) -> None:
-    if request.state.mobile_session and user.get("community_terms_version") != TERMS_VERSION:
+def require_community_terms(user: dict) -> None:
+    if user.get("community_terms_version") != TERMS_VERSION:
         raise HTTPException(403, "Accept the Community Guidelines before posting.")
 
 
@@ -333,6 +353,8 @@ class PasswordBody(BaseModel):
     def strong(cls, v):
         if len(v) < 8 or not any(c.isalpha() for c in v) or not any(c.isdigit() for c in v):
             raise ValueError("Password must be at least 8 characters and include a letter and a number")
+        if len(v.encode("utf-8")) > 72:
+            raise ValueError("Password must be at most 72 bytes")
         return v
 
 
@@ -453,11 +475,10 @@ async def auth_status():
 
 
 async def check_lockout(identifier: str):
-    rec = await db.login_attempts.find_one({"identifier": identifier})
-    if not rec or rec.get("count", 0) < LOCKOUT_ATTEMPTS:
-        return
-    locked_until = rec.get("locked_until")
-    if locked_until and datetime.fromisoformat(locked_until) > datetime.now(timezone.utc):
+    rec = await db.login_attempts.find_one({
+        "identifier": identifier, "count": {"$gte": LOCKOUT_ATTEMPTS}, "locked_until": {"$gt": now_iso()},
+    }, {"_id": 1})
+    if rec:
         raise HTTPException(
             status_code=429,
             detail=f"Too many failed attempts. Try again in {LOCKOUT_MINUTES} minutes.",
@@ -465,30 +486,23 @@ async def check_lockout(identifier: str):
 
 
 async def register_fail(identifier: str):
-    """Count a failed login. The counter resets once a lockout window expires."""
+    """Count failures atomically across web and mobile sign-in requests."""
     now = datetime.now(timezone.utc)
-    rec = await db.login_attempts.find_one({"identifier": identifier})
-    locked_until = rec.get("locked_until") if rec else None
-    expired = True
-    if locked_until:
-        try:
-            expired = datetime.fromisoformat(locked_until) <= now
-        except ValueError:
-            expired = True
-    count = 1 if (not rec or expired) else rec.get("count", 0) + 1
-    await db.login_attempts.update_one(
-        {"identifier": identifier},
-        {
-            "$set": {
-                "count": count,
-                "locked_until": (now + timedelta(minutes=LOCKOUT_MINUTES)).isoformat(),
-                # Stored as a BSON date (not a string) so the TTL index below
-                # actually expires the record.
-                "updated_at": now,
-            }
-        },
-        upsert=True,
-    )
+    key = {"_id": identifier}
+    changes = [{"$set": {
+        "identifier": {"$literal": identifier},
+        "count": {"$cond": [
+            {"$gt": [{"$ifNull": ["$locked_until", ""]}, now.isoformat()]},
+            {"$add": [{"$ifNull": ["$count", 0]}, 1]},
+            1,
+        ]},
+        "locked_until": (now + timedelta(minutes=LOCKOUT_MINUTES)).isoformat(),
+        "updated_at": now,
+    }}]
+    try:
+        await db.login_attempts.update_one(key, changes, upsert=True)
+    except DuplicateKeyError:
+        await db.login_attempts.update_one(key, changes)
 
 
 async def create_account(body: RegisterBody, *, mobile: bool = False):
@@ -521,6 +535,9 @@ async def create_account(body: RegisterBody, *, mobile: bool = False):
             raise HTTPException(status_code=400, detail="This invite code has expired")
         if invite.get("used"):
             raise HTTPException(status_code=400, detail="This invite code has already been used")
+        if invite.get("channel") == "email" and invite.get("value"):
+            if email != invite["value"].strip().lower():
+                raise HTTPException(400, "This invitation is for a different email address")
         claimed = await db.invites.update_one(
             {"_id": invite["_id"], "used": False},
             {"$set": {"used": True, "used_at": now_iso(), "registered_user_id": str(user_id)}},
@@ -571,7 +588,7 @@ async def register(body: RegisterBody):
     return {"access_token": token, "user": public_user(doc)}
 
 
-async def authenticate(body: LoginBody):
+async def authenticate(body: LoginBody, *, allow_suspended: bool = False):
     email = body.email.lower()
     identifier = email
     await check_lockout(identifier)
@@ -579,8 +596,8 @@ async def authenticate(body: LoginBody):
     if not user or not verify_password(body.password, user["password_hash"]):
         await register_fail(identifier)
         raise HTTPException(status_code=401, detail="Invalid email or password")
-    await db.login_attempts.delete_one({"identifier": identifier})
-    if user.get("suspended"):
+    await db.login_attempts.delete_many({"identifier": identifier})
+    if user.get("suspended") and not allow_suspended:
         raise HTTPException(403, "Account suspended. Contact your workspace administrator.")
     return user
 
@@ -588,7 +605,7 @@ async def authenticate(body: LoginBody):
 @api.post("/auth/login")
 async def login(body: LoginBody):
     user = await authenticate(body)
-    token = create_access_token(str(user["_id"]), user["email"])
+    token = create_access_token(str(user["_id"]), user["email"], version=user.get("mobile_session_version", 0))
     return {"access_token": token, "user": public_user(user)}
 
 
@@ -672,20 +689,44 @@ async def update_prefs(body: PrefsBody, user: dict = Depends(get_current_user)):
 
 
 @api.post("/me/password")
-async def change_password(body: PasswordBody, user: dict = Depends(get_current_user)):
+async def change_password(body: PasswordBody, request: Request, user: dict = Depends(get_current_user)):
     if not verify_password(body.current_password, user["password_hash"]):
         raise HTTPException(status_code=400, detail="Current password is incorrect")
-    await db.users.update_one({"_id": user["_id"]}, {
+    version = user.get("mobile_session_version", 0) + 1
+    result = await db.users.update_one({
+        "_id": user["_id"],
+        "password_hash": user["password_hash"],
+        "suspended": {"$ne": True},
+        "account_deletion_pending": {"$ne": True},
+    }, {
         "$set": {"password_hash": hash_password(body.new_password)},
         "$inc": {"mobile_session_version": 1},
     })
-    return {"ok": True}
+    if not result.matched_count:
+        raise HTTPException(409, "Your account changed. Sign in again to update your password.")
+    await db.mobile_sessions.delete_many({"user_id": user["_id"], "user_version": {"$lt": version}})
+    response = {"ok": True}
+    if not request.state.mobile_session:
+        response["access_token"] = create_access_token(str(user["_id"]), user["email"], version=version)
+    return response
 
 
 @api.delete("/me")
 async def delete_me(body: DeleteMeBody, user: dict = Depends(get_current_user)):
     if not verify_password(body.current_password, user["password_hash"]):
         raise HTTPException(status_code=400, detail="Password is incorrect")
+    return await delete_or_request_account(user)
+
+
+@api.post("/account-deletion")
+async def delete_account_from_web(body: LoginBody):
+    # Password confirmation uses the existing login lockout. This flow issues
+    # no session and also works for a suspended account.
+    user = await authenticate(body, allow_suspended=True)
+    return await delete_or_request_account(user)
+
+
+async def delete_or_request_account(user):
     await db.users.update_one({"_id": user["_id"]}, {"$set": {"account_deletion_pending": True}})
     if user.get("role") == "admin":
         other_admin = await db.users.find_one({
@@ -693,18 +734,31 @@ async def delete_me(body: DeleteMeBody, user: dict = Depends(get_current_user)):
             "suspended": {"$ne": True}, "account_deletion_pending": {"$ne": True},
         })
         if not other_admin:
-            await db.users.update_one({"_id": user["_id"]}, {"$unset": {"account_deletion_pending": ""}})
-            raise HTTPException(status_code=400, detail="You are the only admin. Assign another admin first.")
+            await db.users.update_one({"_id": user["_id"]}, {
+                "$set": {"account_deletion_requested_at": user.get("account_deletion_requested_at") or now_iso()},
+                "$unset": {"account_deletion_pending": ""},
+            })
+            return {"ok": True, "status": "requested"}
 
     await purge_account_data(db, user)
-    return {"ok": True}
+    return {"ok": True, "status": "deleted"}
 
 
 # ================================================================ TEAM / META
 @api.get("/team/members")
 async def team_members(user: dict = Depends(get_current_user)):
     users = await db.users.find({}, {"email": 1, "name": 1, "initials": 1, "campus": 1, "role": 1, "job_title": 1, "birthday": 1, "start_date": 1, "location_id": 1, "kudos": 1, "preferences": 1}).to_list(1000)
-    return [public_user(u) for u in users]
+    directory = []
+    for person in users:
+        member = public_user(person)
+        if person["_id"] != user["_id"]:
+            preferences = member["preferences"] or {}
+            if not preferences.get("show_birthday", True):
+                member["birthday"] = None
+            if not preferences.get("show_anniversary", True):
+                member["start_date"] = None
+        directory.append(member)
+    return directory
 
 
 @api.get("/team/birthdays")
@@ -826,8 +880,8 @@ async def list_posts(user: dict = Depends(get_current_user)):
 
 
 @api.post("/posts")
-async def create_post(body: PostBody, request: Request, user: dict = Depends(require("post_huddle"))):
-    require_mobile_terms(request, user)
+async def create_post(body: PostBody, user: dict = Depends(require("post_huddle"))):
+    require_community_terms(user)
     filter_text(body.title, body.content)
     await require_attachment_owner(body.image_id, user)
     if body.is_protocol and (not (body.title or "").strip() or not (body.protocol_version or "").strip()):
@@ -905,8 +959,8 @@ async def list_comments(pid: str, user: dict = Depends(get_current_user)):
 
 
 @api.post("/posts/{pid}/comments")
-async def add_comment(pid: str, body: CommentBody, request: Request, user: dict = Depends(get_current_user)):
-    require_mobile_terms(request, user)
+async def add_comment(pid: str, body: CommentBody, user: dict = Depends(get_current_user)):
+    require_community_terms(user)
     filter_text(body.text)
     if not ObjectId.is_valid(pid) or not await db.posts.find_one({"_id": ObjectId(pid), **visible_from("author_id", user)}):
         raise HTTPException(status_code=404, detail="Post not found")
@@ -931,14 +985,14 @@ async def add_comment(pid: str, body: CommentBody, request: Request, user: dict 
 
 
 # ================================================================ TIME OFF
-def serialize_timeoff(t: dict) -> dict:
+def serialize_timeoff(t: dict, *, include_reason: bool = True) -> dict:
     return {
         "id": str(t["_id"]),
         "user_id": t.get("user_id"),
         "name": t.get("name"),
         "initials": t.get("initials"),
         "date": t.get("date"),
-        "reason": t.get("reason"),
+        "reason": t.get("reason") if include_reason else None,
         "status": t.get("status"),
         "created_at": t.get("created_at"),
     }
@@ -950,7 +1004,8 @@ async def timeoff_day(date: str, request: Request, user: dict = Depends(get_curr
     if request.state.mobile_session:
         query["user_id"] = str(user["_id"])
     items = await db.timeoff.find(query).to_list(500)
-    return [serialize_timeoff(t) for t in items]
+    approver = compute_permissions(user.get("role", "staff"))["approve_timeoff"]
+    return [serialize_timeoff(t, include_reason=approver or t.get("user_id") == str(user["_id"])) for t in items]
 
 
 @api.get("/timeoff/month")
@@ -960,7 +1015,8 @@ async def timeoff_month(year: int, month: int, request: Request, user: dict = De
     if request.state.mobile_session:
         query["user_id"] = str(user["_id"])
     items = await db.timeoff.find(query).to_list(1000)
-    return [serialize_timeoff(t) for t in items]
+    approver = compute_permissions(user.get("role", "staff"))["approve_timeoff"]
+    return [serialize_timeoff(t, include_reason=approver or t.get("user_id") == str(user["_id"])) for t in items]
 
 
 @api.post("/timeoff")
@@ -1099,7 +1155,6 @@ async def list_schedules(period: str, user: dict = Depends(get_current_user)):
 
 @api.post("/schedules/upload")
 async def upload_schedule(
-    request: Request,
     file: UploadFile = File(...),
     title: str = Form(...),
     period: str = Form(...),
@@ -1109,7 +1164,7 @@ async def upload_schedule(
     department: Optional[str] = Form(None),
     user: dict = Depends(require("manage_schedules")),
 ):
-    require_mobile_terms(request, user)
+    require_community_terms(user)
     filter_text(title)
     if period not in ("current", "upcoming", "previous"):
         raise HTTPException(status_code=400, detail="Invalid schedule period")
@@ -1169,6 +1224,7 @@ async def delete_schedule(sid: str, user: dict = Depends(require("manage_schedul
 # ================================================================ UPLOADS / FILES
 @api.post("/upload")
 async def upload_file(file: UploadFile = File(...), user: dict = Depends(get_current_user)):
+    require_community_terms(user)
     content = await file.read()
     ensure_upload_size(content)
     fdoc = {
@@ -1226,9 +1282,9 @@ class ChatHub:
     def __init__(self):
         self.rooms: dict = {}
 
-    async def connect(self, cid: str, ws: WebSocket, user_id: ObjectId):
-        await ws.accept()
-        self.rooms.setdefault(cid, {})[ws] = user_id
+    async def connect(self, cid: str, ws: WebSocket, user_id: ObjectId, payload: dict):
+        await ws.accept(subprotocol=CHAT_SOCKET_PROTOCOL)
+        self.rooms.setdefault(cid, {})[ws] = (user_id, payload.get("ver", 0), int(payload["exp"]))
 
     def disconnect(self, cid: str, ws: WebSocket):
         room = self.rooms.get(cid)
@@ -1243,18 +1299,20 @@ class ChatHub:
             return
         chat = await db.chats.find_one({"_id": ObjectId(cid)})
         people = await db.users.find({
-            "_id": {"$in": list(set(room.values()))},
+            "_id": {"$in": list({membership[0] for membership in room.values()})},
             "suspended": {"$ne": True},
             "account_deletion_pending": {"$ne": True},
-        }, {"blocked_user_ids": 1}).to_list(None)
+        }, {"blocked_user_ids": 1, "mobile_session_version": 1}).to_list(None)
         current = {person["_id"]: person for person in people}
         author_id = payload.get("user_id") or payload.get("message", {}).get("sender_id")
-        for ws, user_id in room.items():
+        now = datetime.now(timezone.utc).timestamp()
+        for ws, (user_id, version, expires_at) in room.items():
             if exclude is not None and ws is exclude:
                 continue
             try:
                 user = current.get(user_id)
-                if not user or not chat or not can_access_chat(chat, user):
+                if (not user or not chat or not can_access_chat(chat, user)
+                    or version != user.get("mobile_session_version", 0) or expires_at <= now):
                     await ws.close(code=1008)
                     self.disconnect(cid, ws)
                 elif author_id not in user.get("blocked_user_ids", []):
@@ -1336,8 +1394,8 @@ async def list_chats(user: dict = Depends(get_current_user)):
 
 
 @api.post("/chats")
-async def create_chat(body: ChatBody, request: Request, user: dict = Depends(get_current_user)):
-    require_mobile_terms(request, user)
+async def create_chat(body: ChatBody, user: dict = Depends(get_current_user)):
+    require_community_terms(user)
     filter_text(body.name, body.description)
     members = list(set(body.member_ids + [str(user["_id"])])) if not body.is_everyone else []
     doc = {
@@ -1378,8 +1436,8 @@ async def list_messages(cid: str, request: Request, user: dict = Depends(get_cur
 
 
 @api.post("/chats/{cid}/messages")
-async def send_message(cid: str, body: MessageBody, request: Request, user: dict = Depends(get_current_user)):
-    require_mobile_terms(request, user)
+async def send_message(cid: str, body: MessageBody, user: dict = Depends(get_current_user)):
+    require_community_terms(user)
     filter_text(body.text)
     c = await db.chats.find_one({"_id": ObjectId(cid)}) if ObjectId.is_valid(cid) else None
     if not c or not can_access_chat(c, user):
@@ -1413,7 +1471,13 @@ async def send_message(cid: str, body: MessageBody, request: Request, user: dict
 
 
 @api.websocket("/ws/chat/{cid}")
-async def ws_chat(websocket: WebSocket, cid: str, token: str = ""):
+async def ws_chat(websocket: WebSocket, cid: str):
+    protocols = websocket.scope.get("subprotocols", [])
+    credentials = [protocol[5:] for protocol in protocols if protocol.startswith("auth.")]
+    if CHAT_SOCKET_PROTOCOL not in protocols or len(credentials) != 1:
+        await websocket.close(code=1008)
+        return
+    token = credentials[0]
     try:
         payload = decode_token(token)
         user = await authenticated_user(payload, allow_mobile=False)
@@ -1424,7 +1488,7 @@ async def ws_chat(websocket: WebSocket, cid: str, token: str = ""):
     except Exception:
         await websocket.close(code=1008)
         return
-    await hub.connect(cid, websocket, user["_id"])
+    await hub.connect(cid, websocket, user["_id"], payload)
     sender_id = str(user["_id"])
     sender_name = user.get("name")
     try:
@@ -1695,8 +1759,8 @@ async def list_kudos(user: dict = Depends(get_current_user)):
 
 
 @api.post("/kudos")
-async def give_kudos(body: KudosBody, request: Request, user: dict = Depends(get_current_user)):
-    require_mobile_terms(request, user)
+async def give_kudos(body: KudosBody, user: dict = Depends(get_current_user)):
+    require_community_terms(user)
     filter_text(body.message)
     if body.to_id == str(user["_id"]):
         raise HTTPException(status_code=400, detail="You can't give kudos to yourself")
@@ -1762,8 +1826,8 @@ async def list_invites(user: dict = Depends(require("invite"))):
 async def create_invite(body: InviteBody, user: dict = Depends(require("invite"))):
     if body.access not in ROLES:
         raise HTTPException(status_code=400, detail="Invalid access role")
-    if body.access == "admin" and user.get("role") != "admin":
-        raise HTTPException(status_code=403, detail="Only admins can invite admins")
+    if body.access != "staff" and user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Only admins can invite managers or admins")
     campus = body.campus.strip() if body.campus else None
     location_id = None
     if body.location_id:
@@ -1781,7 +1845,7 @@ async def create_invite(body: InviteBody, user: dict = Depends(require("invite")
         campus = location["name"]
         location_id = str(location["_id"])
     doc = {
-        "code": gen_code(6),
+        "code": gen_code(10),
         "channel": body.channel,
         "value": body.value,
         "campus": campus,

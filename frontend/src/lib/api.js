@@ -12,7 +12,7 @@ export const getToken = () => localStorage.getItem(TOKEN_KEY);
 export const setToken = (t) => localStorage.setItem(TOKEN_KEY, t);
 export const clearToken = () => localStorage.removeItem(TOKEN_KEY);
 
-export const api = axios.create({ baseURL: API });
+export const api = axios.create({ baseURL: API, allowAbsoluteUrls: false });
 
 api.interceptors.request.use((config) => {
   const t = getToken();
@@ -23,7 +23,8 @@ api.interceptors.request.use((config) => {
 api.interceptors.response.use(
   (r) => r,
   (err) => {
-    if (err.response?.status === 401 && getToken()) {
+    const currentToken = getToken();
+    if (err.response?.status === 401 && currentToken && err.config?.headers?.Authorization === `Bearer ${currentToken}`) {
       clearToken();
       if (!window.location.pathname.startsWith("/login")) {
         window.location.href = "/login";
@@ -43,9 +44,9 @@ export function apiError(err) {
   return String(detail);
 }
 
-export function fileUrl(id) {
-  if (!id) return null;
-  return `${API}/files/${id}?token=${getToken()}`;
+export async function fetchAttachment(id, signal) {
+  const { data } = await api.get(`/files/${encodeURIComponent(id)}`, { responseType: "blob", signal });
+  return URL.createObjectURL(data);
 }
 
 export function wsUrl(path) {
@@ -54,5 +55,5 @@ export function wsUrl(path) {
   const base = /^https?:\/\//.test(API)
     ? API.replace(/^http/, "ws")
     : `${window.location.protocol === "https:" ? "wss" : "ws"}://${window.location.host}${API}`;
-  return `${base}${path}?token=${getToken()}`;
+  return `${base}${path}`;
 }

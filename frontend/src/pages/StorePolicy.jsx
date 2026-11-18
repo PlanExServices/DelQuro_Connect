@@ -1,9 +1,10 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { Logo } from "@/components/Logo";
-import { Btn } from "@/components/kit";
+import { Btn, Field, inputCls, inputStyle } from "@/components/kit";
 import { useAuth } from "@/context/AuthContext";
 import { DeleteModal } from "@/pages/Profile";
+import { api, apiError } from "@/lib/api";
 
 const supportEmail = "info@delqurolabs.com";
 
@@ -46,21 +47,51 @@ export function Privacy() {
 export function AccountDeletion() {
   const { user, loading, logout } = useAuth();
   const [confirming, setConfirming] = useState(false);
-  const [deleted, setDeleted] = useState(false);
+  const [result, setResult] = useState("");
+  const [direct, setDirect] = useState(false);
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState("");
+
+  async function confirmByPassword(event) {
+    event.preventDefault();
+    setSubmitting(true);
+    setError("");
+    try {
+      const { data } = await api.post("/account-deletion", { email: email.trim(), password });
+      setPassword("");
+      setResult(data.status);
+    } catch (err) {
+      setError(apiError(err));
+    } finally {
+      setSubmitting(false);
+    }
+  }
 
   return (
     <PolicyPage title="Delete your DelQuro Connect account">
-      {deleted ? <p role="status">Your account was deleted.</p> : <>
+      {result ? <p role="status">{result === "deleted" ? "Your account was deleted." :
+        "Your deletion request was recorded. Administrator handover is required before it can be completed."}</p> : <>
         <p>You can permanently delete your account on this page or in the DelQuro Connect app under Settings → Delete account.</p>
         <p>Deletion removes your profile, sign-in credentials, messages, posts, comments and time-off requests from the active service. Shared operational records such as posted schedules may remain available with the link to your account removed. See the <Link className="underline" to="/privacy">privacy policy</Link> for retention details.</p>
-        <p>If you are the last active workspace administrator, transfer the administrator role before deleting your account. Contact <Link className="underline" to="/support">support</Link> if you need help closing the workspace or regaining access.</p>
+        <p>If you are the last active workspace administrator, Connect records your request while the workspace needs an administrator handover. Contact <Link className="underline" to="/support">support</Link> for help closing the workspace or recovering access.</p>
         {!loading && (user ? (
           <Btn variant="danger" onClick={() => setConfirming(true)}>Delete account</Btn>
-        ) : <Link className="font-semibold underline" to="/login?continue=delete-account">Sign in to delete your account</Link>)}
+        ) : <div className="space-y-3">
+          <Link className="font-semibold underline" to="/login?continue=delete-account">Sign in to delete your account</Link>
+          <div><Btn variant="outline" onClick={() => setDirect(!direct)} aria-expanded={direct}>Confirm without signing in</Btn></div>
+          {direct && <form onSubmit={confirmByPassword} className="space-y-3">
+            <Field label="Work email"><input className={inputCls} style={inputStyle} type="email" autoComplete="username" value={email} onChange={(event) => setEmail(event.target.value)} required /></Field>
+            <Field label="Current password"><input className={inputCls} style={inputStyle} type="password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} required /></Field>
+            <Btn type="submit" variant="danger" disabled={submitting}>{submitting ? "Confirming…" : "Confirm account deletion"}</Btn>
+            {error && <p role="alert">{error}</p>}
+          </form>}
+        </div>)}
       </>}
       {confirming && <DeleteModal onClose={() => setConfirming(false)} onDone={() => {
         setConfirming(false);
-        setDeleted(true);
+        setResult("deleted");
         logout();
       }} />}
     </PolicyPage>

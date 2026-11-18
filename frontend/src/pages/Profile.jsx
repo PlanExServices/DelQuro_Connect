@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import { LogOut } from "lucide-react";
-import { api, apiError } from "@/lib/api";
+import { api, apiError, setToken } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
 import { Avatar } from "@/components/Avatar";
 import { BackHeader } from "@/components/BackHeader";
@@ -123,7 +123,12 @@ function PasswordModal({ onClose }) {
   const [cur, setCur] = useState("");
   const [next, setNext] = useState("");
   const submit = async () => {
-    try { await api.post("/me/password", { current_password: cur, new_password: next }); toast.success("Password changed"); onClose(); }
+    try {
+      const { data } = await api.post("/me/password", { current_password: cur, new_password: next });
+      if (data.access_token) setToken(data.access_token);
+      toast.success("Password changed");
+      onClose();
+    }
     catch (e) { toast.error(apiError(e)); }
   };
   return (
@@ -141,7 +146,16 @@ export function DeleteModal({ onClose, onDone }) {
   const submit = async () => {
     if (!pwd || submitting) return;
     setSubmitting(true);
-    try { await api.delete("/me", { data: { current_password: pwd } }); toast.success("Account deleted"); onDone(); }
+    try {
+      const { data } = await api.delete("/me", { data: { current_password: pwd } });
+      if (data.status === "requested") {
+        toast.success("Deletion requested. The workspace needs an administrator handover.");
+        onClose();
+      } else {
+        toast.success("Account deleted");
+        onDone();
+      }
+    }
     catch (e) { toast.error(apiError(e)); }
     finally { setSubmitting(false); }
   };

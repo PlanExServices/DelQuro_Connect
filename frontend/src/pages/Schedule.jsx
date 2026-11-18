@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback } from "react";
 import { toast } from "sonner";
 import { Upload, FileText, Download, Trash2, Calendar, Eye } from "lucide-react";
-import { api, apiError, fileUrl } from "@/lib/api";
+import { api, apiError, fetchAttachment } from "@/lib/api";
 import { fmtBytes } from "@/lib/format";
 import { useAuth } from "@/context/AuthContext";
 import { Modal } from "@/components/Modal";
@@ -42,6 +42,7 @@ export default function Schedule() {
   const [department, setDepartment] = useState("");
   const [showUpload, setShowUpload] = useState(false);
   const [viewer, setViewer] = useState(null);
+  const [opening, setOpening] = useState(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -64,7 +65,27 @@ export default function Schedule() {
   const campuses = [...new Set(all.map((s) => s.campus).filter(Boolean))].sort();
   const departments = [...new Set(all.map((s) => s.department).filter(Boolean))].sort();
   const list = (data[tab] || []).filter((s) => (!campus || s.campus === campus) && (!department || s.department === department));
-  const preview = (s) => setViewer({ src: fileUrl(s.file_id), title: s.title, kind: fileKind(s) });
+  useEffect(() => () => { if (viewer) URL.revokeObjectURL(viewer.src); }, [viewer]);
+
+  async function openFile(schedule, preview) {
+    setOpening(schedule.id);
+    try {
+      const src = await fetchAttachment(schedule.file_id);
+      if (preview) {
+        setViewer({ src, title: schedule.title, kind: fileKind(schedule), filename: schedule.file_name });
+      } else {
+        const link = document.createElement("a");
+        link.href = src;
+        link.download = schedule.file_name || "schedule";
+        link.click();
+        window.setTimeout(() => URL.revokeObjectURL(src), 1000);
+      }
+    } catch (e) {
+      toast.error(apiError(e));
+    } finally {
+      setOpening(null);
+    }
+  }
 
   return (
     <>
@@ -100,8 +121,8 @@ export default function Schedule() {
             </div>
           </div>
           <div className="flex items-center gap-2 mt-3 pt-3 border-t" style={{ borderColor: "var(--divider)" }}>
-            {fileKind(s) && <button onClick={() => preview(s)} className="inline-flex items-center gap-2 px-3 py-2 rounded-full text-sm font-semibold" style={{ color: "var(--brand)", background: "var(--surface-tertiary)" }} data-testid="schedule-preview"><Eye size={16} /> Preview</button>}
-            <a href={fileUrl(s.file_id)} download={s.file_name} className="inline-flex items-center gap-2 px-3 py-2 rounded-full text-sm font-semibold" style={{ color: "var(--teal-dark)", background: "var(--brand-tertiary)" }} data-testid="schedule-download"><Download size={16} /> Download</a>
+            {fileKind(s) && <button type="button" disabled={opening !== null} onClick={() => openFile(s, true)} className="inline-flex items-center gap-2 px-3 py-2 rounded-full text-sm font-semibold" style={{ color: "var(--brand)", background: "var(--surface-tertiary)" }} data-testid="schedule-preview"><Eye size={16} /> Preview</button>}
+            <button type="button" disabled={opening !== null} onClick={() => openFile(s, false)} className="inline-flex items-center gap-2 px-3 py-2 rounded-full text-sm font-semibold" style={{ color: "var(--teal-dark)", background: "var(--brand-tertiary)" }} data-testid="schedule-download"><Download size={16} /> Download</button>
             {user?.permissions?.manage_schedules && <button onClick={() => del(s)} aria-label={`Delete ${s.title}`} className="grid place-items-center rounded-full ml-auto" style={{ width: 40, height: 40, background: "var(--error-soft)" }} data-testid="schedule-delete"><Trash2 size={16} color="var(--error)" /></button>}
           </div>
         </Card>)}
@@ -109,7 +130,7 @@ export default function Schedule() {
 
       {showUpload && <UploadModal onClose={() => setShowUpload(false)} onDone={() => { setShowUpload(false); load(); }} />}
       {viewer?.kind === "pdf" && <Modal open onClose={() => setViewer(null)} title={viewer.title} size="lg" testId="schedule-pdf-preview"
-        footer={<a href={viewer.src} download className="inline-flex items-center gap-2 text-sm font-semibold" style={{ color: "var(--teal-dark)" }}><Download size={16} /> Download PDF</a>}>
+        footer={<a href={viewer.src} download={viewer.filename || "schedule.pdf"} className="inline-flex items-center gap-2 text-sm font-semibold" style={{ color: "var(--teal-dark)" }}><Download size={16} /> Download PDF</a>}>
         <PdfPreview src={viewer.src} title={viewer.title} />
       </Modal>}
       {viewer?.kind === "image" && <ImageViewer src={viewer.src} onClose={() => setViewer(null)} />}

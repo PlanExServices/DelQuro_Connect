@@ -3,7 +3,7 @@ import { ChevronLeft, ChevronRight } from "lucide-react";
 import { getDocument, GlobalWorkerOptions } from "pdfjs-dist/build/pdf.mjs";
 import { Loading, ErrorState } from "@/components/States";
 
-GlobalWorkerOptions.workerSrc = `${process.env.PUBLIC_URL || ""}/pdf.worker.min.mjs`;
+GlobalWorkerOptions.workerSrc = new URL("pdfjs-dist/build/pdf.worker.min.mjs", import.meta.url).toString();
 
 export function PdfPreview({ src, title }) {
   const containerRef = useRef(null);
@@ -24,7 +24,7 @@ export function PdfPreview({ src, title }) {
 
   useEffect(() => {
     let active = true;
-    const task = getDocument({ url: src });
+    const task = getDocument({ url: src, isEvalSupported: false });
     setPdf(null); setPage(1); setRendering(true); setError("");
     task.promise.then((loadedPdf) => {
       if (active) setPdf(loadedPdf);

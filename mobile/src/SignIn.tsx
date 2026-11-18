@@ -67,7 +67,7 @@ export function SignIn({ session, demo, switchWorkspace }: {
       </View>
       {switchWorkspace && <Button label={demo ? 'Back to team sign in' : 'Open demo workspace'}
         onPress={switchWorkspace} quiet disabled={action.busy} />}
-      <PublicLinks workspace={session.workspace} />
+      <PublicLinks includeDeletion workspace={session.workspace} />
     </Page>
   );
 }

@@ -2,12 +2,13 @@ import { useEffect, useState, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import { Plus, Heart, MessageCircle, Trash2, Camera, Image as ImageIcon, X, Gift, Award, MessageCircle as MC, Send, Zap, ChevronRight, ShieldCheck, BookOpen, CheckCircle2 } from "lucide-react";
-import { api, apiError, fileUrl } from "@/lib/api";
+import { api, apiError } from "@/lib/api";
 import { relativeTime } from "@/lib/format";
 import { useAuth } from "@/context/AuthContext";
 import { Avatar } from "@/components/Avatar";
 import { Modal } from "@/components/Modal";
 import { ImageViewer } from "@/components/ImageViewer";
+import { PrivateImage } from "@/components/PrivateImage";
 import { PageHeader, Card, Btn, Field, inputCls, inputStyle } from "@/components/kit";
 import { Loading, EmptyState, ErrorState } from "@/components/States";
 
@@ -133,9 +134,10 @@ export default function Huddle() {
                 {p.title && <h3 className="font-display text-xl mb-1" style={{ color: "var(--brand)" }}>{p.title}</h3>}
                 {p.content && <p className="text-[15px] whitespace-pre-wrap mb-3" style={{ color: "var(--on-surface)" }}>{p.content}</p>}
                 {p.image_id && (
-                  <button type="button" onClick={() => setViewer(fileUrl(p.image_id))} aria-label={`Open image attached to ${p.title || "post"}`} className="block w-full mb-3">
-                    <img src={fileUrl(p.image_id)} alt="Post attachment" className="rounded-2xl w-full max-h-96 object-cover cursor-zoom-in" />
-                  </button>
+                  <div className="mb-3">
+                    <PrivateImage fileId={p.image_id} onPreview={setViewer} previewLabel={`Open image attached to ${p.title || "post"}`}
+                      alt="Post attachment" className="rounded-2xl w-full max-h-96 object-cover cursor-zoom-in" />
+                  </div>
                 )}
                 <div className="flex items-center gap-5 pt-1">
                   <button onClick={() => toggleLike(p)} aria-label={`${p.liked ? "Unlike" : "Like"} ${p.title || "post"}, ${p.like_count} likes`} aria-pressed={p.liked} className="flex items-center gap-1.5 text-sm font-medium" data-testid="post-like">
@@ -172,7 +174,7 @@ export default function Huddle() {
         footer={protocolFor.acknowledged ? <p className="text-sm font-semibold" style={{ color: "var(--success)" }}>You acknowledged this version.</p> : <Btn onClick={() => acknowledge(protocolFor.id)} className="w-full" data-testid="protocol-ack">Mark as Read &amp; Understood</Btn>}>
         <p className="text-sm mb-4" style={{ color: "var(--text-secondary)" }}>Version {protocolFor.protocol_version} · Posted {new Date(protocolFor.created_at).toLocaleDateString()}</p>
         <p className="text-[15px] whitespace-pre-wrap leading-relaxed" style={{ color: "var(--on-surface)" }}>{protocolFor.content}</p>
-        {protocolFor.image_id && <img src={fileUrl(protocolFor.image_id)} alt="Protocol attachment" className="mt-4 max-w-full rounded-2xl" />}
+        {protocolFor.image_id && <PrivateImage fileId={protocolFor.image_id} alt="Protocol attachment" className="mt-4 max-w-full rounded-2xl" />}
       </Modal>}
       {commentsFor && <CommentsModal post={commentsFor} onClose={() => setCommentsFor(null)} onChange={load} />}
       {viewer && <ImageViewer src={viewer} onClose={() => setViewer(null)} />}
@@ -227,7 +229,7 @@ function NewPostModal({ onClose, onDone }) {
       </Field>
       {imageId && (
         <div className="relative mb-4">
-          <img src={fileUrl(imageId)} alt="preview" className="rounded-2xl w-full max-h-56 object-cover" />
+          <PrivateImage fileId={imageId} alt="Upload preview" className="rounded-2xl w-full max-h-56 object-cover" />
           <button onClick={() => setImageId(null)} aria-label="Remove image" className="absolute top-2 right-2 grid place-items-center rounded-full" style={{ width: 40, height: 40, background: "var(--scrim)" }}><X size={16} color="#fff" /></button>
         </div>
       )}

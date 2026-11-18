@@ -20,7 +20,7 @@ def session_response(session, user, credential):
     return {
         "access_token": create_access_token(
             str(user["_id"]), user["email"], session_id=str(session["_id"]),
-            lifetime=ACCESS_LIFETIME,
+            lifetime=ACCESS_LIFETIME, version=session["user_version"],
         ),
         "refresh_token": credential,
     }

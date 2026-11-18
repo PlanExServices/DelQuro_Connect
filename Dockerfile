@@ -14,7 +14,7 @@
 
 
 # ---------- stage 1: build the React frontend ----------
-FROM node:20-bookworm-slim AS frontend-build
+FROM node:24-bookworm-slim AS frontend-build
 
 WORKDIR /frontend
 

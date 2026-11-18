@@ -5,7 +5,7 @@
   "dependencies": {
     "@expo/metro-runtime": "~57.0.16",
     "@expo/vector-icons": "^15.0.2",
-    "expo": "~57.0.27",
+    "expo": "~57.0.33",
     "expo-file-system": "~57.0.7",
     "expo-font": "~57.0.4",
     "expo-secure-store": "~57.0.4",
@@ -29,5 +29,11 @@
     "ios": "expo run:ios",
     "web": "expo start --web"
   },
-  "private": true
+  "private": true,
+  "overrides": {
+    "glob": "14.0.2",
+    "minimatch": "11.0.1",
+    "node-forge": "1.4.3",
+    "zod": "4.6.7"
+  }
 }

@@ -5,6 +5,7 @@ import pytest
 from bson import ObjectId
 from fastapi.testclient import TestClient
 from mongomock_motor import AsyncMongoMockClient
+from starlette.websockets import WebSocketDisconnect
 
 
 PASSWORD = "SyntheticMobile42"
@@ -143,7 +144,9 @@ def test_deletion_removes_authored_data_and_preserves_shared_records(site):
     assert request.status_code == 200, request.text
     native_admin = bearer(mobile_login(client, "admin@example.net")["access_token"])
     assert client.get("/api/timeoff/month?year=2026&month=12", headers=native_admin).json() == []
-    assert client.request("DELETE", "/api/me", headers=admin, json={"current_password": PASSWORD}).status_code == 400
+    admin_request = client.request("DELETE", "/api/me", headers=admin, json={"current_password": PASSWORD})
+    assert admin_request.json()["status"] == "requested"
+    assert client.get("/api/auth/me", headers=admin).status_code == 200
     assert client.request("DELETE", "/api/me", headers=employee, json={"current_password": "wrong"}).status_code == 400
     deleted = client.request("DELETE", "/api/me", headers=employee, json={"current_password": PASSWORD})
     assert deleted.status_code == 200, deleted.text
@@ -161,3 +164,65 @@ def test_deletion_removes_authored_data_and_preserves_shared_records(site):
         assert stored["title"] == "Shared schedule" and "uploader_id" not in stored
 
     asyncio.run(assert_deleted())
+
+
+def test_password_change_retires_browser_mobile_and_chat_sessions(site):
+    client, _ = site
+    admin, staff = admin_and_staff(client)
+    native = bearer(staff["access_token"])
+    web = client.post("/api/auth/login", json={"email": "staff@example.net", "password": PASSWORD}).json()
+    web_headers = bearer(web["access_token"])
+    room = client.post("/api/chats", headers=web_headers, json={"name": "Team", "is_everyone": True}).json()
+    assert client.get("/api/auth/me", params={"token": web["access_token"]}).status_code == 401
+    assert client.post("/api/mobile/community/accept", headers=admin).status_code == 200
+    with client.websocket_connect(
+        f"/api/ws/chat/{room['id']}", subprotocols=["connect-chat", f"auth.{web['access_token']}"],
+    ) as socket:
+        assert socket.accepted_subprotocol == "connect-chat"
+        changed = client.post("/api/me/password", headers=web_headers, json={
+            "current_password": PASSWORD, "new_password": "NewSyntheticPassword55",
+        })
+        assert changed.status_code == 200, changed.text
+        assert client.get("/api/auth/me", headers=web_headers).status_code == 401
+        assert client.get("/api/auth/me", headers=native).status_code == 401
+        assert client.get("/api/auth/me", headers=bearer(changed.json()["access_token"])).status_code == 200
+        posted = client.post(f"/api/chats/{room['id']}/messages", headers=admin, json={"text": "Shift update"})
+        assert posted.status_code == 200
+        with pytest.raises(WebSocketDisconnect):
+            socket.receive_json()
+
+
+def test_addressed_invitation_staff_privacy_and_suspended_account_deletion(site):
+    client, db = site
+    admin, staff = admin_and_staff(client)
+    invite = client.post("/api/invites", headers=admin, json={"channel": "email", "value": "other@example.net"}).json()
+    wrong = client.post("/api/mobile/auth/register", json={
+        "email": "stranger@example.net", "name": "Stranger", "password": PASSWORD,
+        "code": invite["code"], "community_terms_accepted": True,
+    })
+    assert wrong.status_code == 400
+    registered = client.post("/api/auth/register", json={
+        "email": "other@example.net", "name": "Other Teammate", "password": PASSWORD, "code": invite["code"],
+    })
+    assert registered.status_code == 200, registered.text
+    other = bearer(registered.json()["access_token"])
+    assert client.post("/api/chats", headers=other, json={"name": "Team"}).status_code == 403
+    staff_headers = bearer(staff["access_token"])
+    request_day = "2026-12-06"
+    created = client.post("/api/timeoff", headers=staff_headers, json={"date": request_day, "reason": "Personal details"})
+    assert created.status_code == 200
+    assert client.get(f"/api/timeoff?date={request_day}", headers=other).json()[0]["reason"] is None
+    assert client.get(f"/api/timeoff?date={request_day}", headers=admin).json()[0]["reason"] == "Personal details"
+    assert client.get(f"/api/timeoff?date={request_day}", headers=staff_headers).json()[0]["reason"] == "Personal details"
+    assert client.get("/api/auth/me", headers=other).headers["cache-control"] == "private, no-store"
+    secret_validation = client.post("/api/mobile/auth/register", json={"password": "DoNotEchoThisValue"})
+    assert secret_validation.status_code == 422
+    assert "DoNotEchoThisValue" not in secret_validation.text
+
+    async def suspend():
+        await db.users.update_one({"_id": ObjectId(staff["user"]["id"])}, {"$set": {"suspended": True}})
+
+    asyncio.run(suspend())
+    deleted = client.post("/api/account-deletion", json={"email": "staff@example.net", "password": PASSWORD})
+    assert deleted.json()["status"] == "deleted"
+    assert client.get("/api/auth/me", headers=staff_headers).status_code == 401

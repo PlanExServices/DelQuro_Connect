@@ -156,6 +156,7 @@ export function Settings({ session, onClose, onBlocksChanged }: {
   const account = session.account;
   const [page, setPage] = useState<'settings' | 'deletion' | 'blocks' | 'moderation'>('settings');
   const [password, setPassword] = useState('');
+  const [deletionRequested, setDeletionRequested] = useState(false);
   const action = useAction();
   if (!account) return null;
 
@@ -189,10 +190,18 @@ export function Settings({ session, onClose, onBlocksChanged }: {
         </>}
         {page === 'deletion' && <View style={ui.card}>
           <Text style={ui.body}>This permanently removes your account, messages, posts and time-off requests. Confirm with your password.</Text>
-          <Field label="Current password" value={password} onChangeText={setPassword} secureTextEntry autoComplete="current-password" />
-          <Button label={action.busy ? 'Deleting…' : 'Permanently delete my account'} danger
-            disabled={!password || action.busy} onPress={() => void action.run(() => session.deleteAccount(password))} />
-          <Button label="Cancel" quiet onPress={back} disabled={action.busy} />
+          {deletionRequested ? (
+            <Text accessibilityRole="alert" style={ui.body}>Your request was recorded. The workspace needs an administrator handover before it can be completed.</Text>
+          ) : <>
+            <Field label="Current password" value={password} onChangeText={setPassword} secureTextEntry autoComplete="current-password" />
+            <Button label={action.busy ? 'Deleting…' : 'Permanently delete my account'} danger
+              disabled={!password || action.busy} onPress={() => void action.run(async () => {
+                const status = await session.deleteAccount(password);
+                setPassword('');
+                if (status === 'requested') setDeletionRequested(true);
+              })} />
+          </>}
+          <Button label={deletionRequested ? 'Back to Settings' : 'Cancel'} quiet onPress={back} disabled={action.busy} />
         </View>}
         {page === 'blocks' && <Blocked api={session.api} onChange={onBlocksChanged} />}
         {page === 'moderation' && <Moderation api={session.api} request={session.request} />}

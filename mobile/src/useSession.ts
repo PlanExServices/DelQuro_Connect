@@ -103,8 +103,9 @@ export function useSession(workspace = origin) {
   }
 
   async function deleteAccount(password: string) {
-    await api('/me', 'DELETE', { current_password: password });
-    await clearSession();
+    const result = await api<{ status?: 'deleted' | 'requested' }>('/me', 'DELETE', { current_password: password });
+    if (result.status !== 'requested') await clearSession();
+    return result.status;
   }
 
   async function acceptTerms() {

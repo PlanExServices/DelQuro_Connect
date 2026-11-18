@@ -1,12 +1,13 @@
 import { useEffect, useState } from "react";
-import { NavLink, useNavigate, Outlet, useLocation } from "react-router-dom";
+import { Link, NavLink, useNavigate, Outlet, useLocation } from "react-router-dom";
 import { Users, Clipboard, Calendar, Settings, MessageSquare } from "lucide-react";
 import { Logo } from "@/components/Logo";
 import { CampusBrand } from "@/components/CampusBrand";
 import { Avatar } from "@/components/Avatar";
 import { useAuth } from "@/context/AuthContext";
 import { useCampus } from "@/context/CampusContext";
-import { api } from "@/lib/api";
+import { api, apiError } from "@/lib/api";
+import { Btn } from "@/components/kit";
 
 // Desktop sidebar: full 5 destinations for parity with the original web app
 const DESKTOP_NAV = [
@@ -50,11 +51,26 @@ function SideItem({ to, label, icon: Icon, badge = 0 }) {
 }
 
 export function AppLayout() {
-  const { user } = useAuth();
+  const { user, setUser } = useAuth();
   const { campus } = useCampus();
   const navigate = useNavigate();
   const loc = useLocation();
   const [unread, setUnread] = useState(0);
+  const [accepting, setAccepting] = useState(false);
+  const [acceptError, setAcceptError] = useState("");
+
+  async function acceptGuidelines() {
+    setAccepting(true);
+    setAcceptError("");
+    try {
+      await api.post("/mobile/community/accept");
+      setUser((current) => current?.id === user.id ? { ...current, community_terms_accepted: true } : current);
+    } catch (error) {
+      setAcceptError(apiError(error));
+    } finally {
+      setAccepting(false);
+    }
+  }
 
   useEffect(() => {
     let active = true;
@@ -105,6 +121,13 @@ export function AppLayout() {
 
         {/* Main content */}
         <main className="flex-1 min-w-0 pb-24 lg:pb-0" key={loc.pathname}>
+          {user && !user.account_deletion_pending && !user.community_terms_accepted && (
+            <section aria-label="Community guidelines" className="rounded-2xl p-4 mb-5 space-y-2" style={{ background: "var(--card)" }}>
+              <p>Read and accept the <Link className="underline font-semibold" to="/community-guidelines">Community Guidelines</Link> before creating or uploading content.</p>
+              <Btn onClick={acceptGuidelines} disabled={accepting}>Accept Community Guidelines</Btn>
+              {acceptError && <p role="alert">{acceptError}</p>}
+            </section>
+          )}
           <Outlet />
         </main>
       </div>
