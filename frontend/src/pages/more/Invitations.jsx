@@ -87,7 +87,7 @@ function CreateInvite({ onClose, onDone }) {
       footer={<Btn onClick={submit} disabled={busy} className="w-full" data-testid="submit-invite">{busy ? "Creating…" : "Generate code"}</Btn>}>
       <Field label="Access role">
         <div className="flex gap-2">
-          {ROLES.filter((role) => role !== "admin" || user?.role === "admin").map((r) => (
+          {ROLES.filter((role) => role === "staff" || user?.role === "admin").map((r) => (
             <button key={r} onClick={() => setAccess(r)} className="flex-1 py-2 rounded-full text-sm font-medium capitalize" style={{ background: access === r ? "var(--brand)" : "var(--surface-tertiary)", color: access === r ? "#fff" : "var(--brand)" }} data-testid={`invite-access-${r}`}>{r}</button>
           ))}
         </div>

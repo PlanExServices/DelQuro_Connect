@@ -7,8 +7,8 @@ import requests
 
 BASE_URL = os.environ.get("BACKEND_URL", "http://localhost:8000").rstrip("/")
 API = f"{BASE_URL}/api"
-ADMIN_EMAIL = "planexservices@gmail.com"
-ADMIN_PASS = "Delquro2026"
+ADMIN_EMAIL = os.environ.get("CONNECT_TEST_ADMIN_EMAIL")
+ADMIN_PASS = os.environ.get("CONNECT_TEST_ADMIN_PASSWORD")
 
 PUBLIC_FIELDS = {"id", "email", "name", "initials", "campus", "role", "job_title",
                  "birthday", "start_date", "location_id", "kudos", "preferences", "permissions"}
@@ -20,9 +20,14 @@ def _h(t):
 
 @pytest.fixture(scope="module")
 def admin_token():
+    if not ADMIN_EMAIL or not ADMIN_PASS:
+        pytest.skip("Configure CONNECT_TEST_ADMIN_EMAIL and CONNECT_TEST_ADMIN_PASSWORD for the isolated test workspace.")
     r = requests.post(f"{API}/auth/login", json={"email": ADMIN_EMAIL, "password": ADMIN_PASS}, timeout=15)
     assert r.status_code == 200, r.text
-    return r.json()["access_token"]
+    token = r.json()["access_token"]
+    acceptance = requests.post(f"{API}/mobile/community/accept", headers=_h(token), timeout=10)
+    assert acceptance.status_code == 200, acceptance.text
+    return token
 
 
 # ---------- team/members shape ----------
@@ -103,12 +108,15 @@ class TestKudosSpotlight:
         assert r.status_code == 200
         assert r.json().get("spotlight") is None
 
-        # Create a temp user (staff via /auth/register with no code)
+        # Enroll a disposable staff member through the normal invitation gate.
         temp_email = "TEST_kudos_target@example.com"
         temp_pass = "TempPass123!"
+        invite = requests.post(f"{API}/invites", headers=_h(admin_token),
+                               json={"channel": "email", "value": temp_email, "access": "staff"}, timeout=10)
+        assert invite.status_code == 200, invite.text
         reg = requests.post(f"{API}/auth/register",
                             json={"email": temp_email, "password": temp_pass, "name": "Temp Target",
-                                  "job_title": "Veterinary Assistant"}, timeout=10)
+                                  "job_title": "Veterinary Assistant", "code": invite.json()["code"]}, timeout=10)
         assert reg.status_code == 200, reg.text
         temp_id = reg.json()["user"]["id"]
         temp_token = reg.json()["access_token"]

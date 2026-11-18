@@ -8,8 +8,8 @@ import requests
 
 BASE_URL = os.environ.get("BACKEND_URL", "http://localhost:8000").rstrip("/")
 API = f"{BASE_URL}/api"
-ADMIN_EMAIL = "planexservices@gmail.com"
-ADMIN_PASS = "Delquro2026"
+ADMIN_EMAIL = os.environ.get("CONNECT_TEST_ADMIN_EMAIL")
+ADMIN_PASS = os.environ.get("CONNECT_TEST_ADMIN_PASSWORD")
 
 
 def _h(tok):
@@ -18,9 +18,14 @@ def _h(tok):
 
 @pytest.fixture(scope="module")
 def admin_token():
+    if not ADMIN_EMAIL or not ADMIN_PASS:
+        pytest.skip("Configure CONNECT_TEST_ADMIN_EMAIL and CONNECT_TEST_ADMIN_PASSWORD for the isolated test workspace.")
     r = requests.post(f"{API}/auth/login", json={"email": ADMIN_EMAIL, "password": ADMIN_PASS}, timeout=15)
     assert r.status_code == 200, r.text
-    return r.json()["access_token"]
+    token = r.json()["access_token"]
+    acceptance = requests.post(f"{API}/mobile/community/accept", headers=_h(token), timeout=10)
+    assert acceptance.status_code == 200, acceptance.text
+    return token
 
 
 # ---------- no demo data ----------
@@ -79,6 +84,7 @@ class TestCelebrations:
                            json={"birthday": bday, "start_date": start_date}, timeout=10)
         assert r.status_code == 200, r.text
         me = r.json()
+        admin_name = me["name"]
         assert me["birthday"] == bday
         assert me["start_date"] == start_date
 
@@ -87,20 +93,20 @@ class TestCelebrations:
             b = requests.get(f"{API}/team/birthdays?window=366", headers=_h(admin_token), timeout=10)
             assert b.status_code == 200
             bdata = b.json()
-            assert any(x["name"] == "Plan Ex" for x in bdata), f"admin not in birthdays: {bdata}"
+            assert any(x["name"] == admin_name for x in bdata), f"admin not in birthdays: {bdata}"
             # should be sorted ascending by days
             days_list = [x["days"] for x in bdata]
             assert days_list == sorted(days_list)
             # today => days=0 for admin
-            plan_ex = next(x for x in bdata if x["name"] == "Plan Ex")
+            plan_ex = next(x for x in bdata if x["name"] == admin_name)
             assert plan_ex["days"] == 0
 
             # anniversaries with window
             a = requests.get(f"{API}/team/anniversaries?window=366", headers=_h(admin_token), timeout=10)
             assert a.status_code == 200
             adata = a.json()
-            assert any(x["name"] == "Plan Ex" for x in adata), f"admin not in anniversaries: {adata}"
-            plan_ex_a = next(x for x in adata if x["name"] == "Plan Ex")
+            assert any(x["name"] == admin_name for x in adata), f"admin not in anniversaries: {adata}"
+            plan_ex_a = next(x for x in adata if x["name"] == admin_name)
             assert plan_ex_a["years"] >= 2
             assert plan_ex_a["days"] == 0
 
@@ -110,8 +116,8 @@ class TestCelebrations:
             assert pref.status_code == 200
             b2 = requests.get(f"{API}/team/birthdays?window=366", headers=_h(admin_token), timeout=10).json()
             a2 = requests.get(f"{API}/team/anniversaries?window=366", headers=_h(admin_token), timeout=10).json()
-            assert not any(x["name"] == "Plan Ex" for x in b2), "opt-out did not hide birthday"
-            assert not any(x["name"] == "Plan Ex" for x in a2), "opt-out did not hide anniversary"
+            assert not any(x["name"] == admin_name for x in b2), "opt-out did not hide birthday"
+            assert not any(x["name"] == admin_name for x in a2), "opt-out did not hide anniversary"
 
             # restore prefs
             requests.put(f"{API}/me/preferences", headers=_h(admin_token),
@@ -153,7 +159,7 @@ class TestSchedules:
         assert any(s["id"] == sched["id"] for s in lst)
 
         # file is servable
-        f = requests.get(f"{API}/files/{sched['file_id']}", params={"token": admin_token}, timeout=10)
+        f = requests.get(f"{API}/files/{sched['file_id']}", headers=_h(admin_token), timeout=10)
         assert f.status_code == 200
 
         # delete

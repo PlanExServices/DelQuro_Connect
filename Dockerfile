@@ -20,7 +20,7 @@ WORKDIR /frontend
 
 # Install dependencies from the lockfile first so this layer is cached.
 COPY frontend/package.json frontend/package-lock.json ./
-RUN npm ci --include=dev --no-audit --no-fund
+RUN npm ci --include=dev --legacy-peer-deps --no-audit --no-fund
 
 COPY frontend/ ./
 
