@@ -46,11 +46,11 @@ Time off is currently requested per full day. There is no in-app practice
 seeder/reset, persona switcher, or separate archived-schedule view. Chat groups
 are user-created; optional development seeding is available from the server.
 
-The requested native iPhone/Android companion and workstation phone approval
-flow are specified in [the mobile authentication and Chat design](docs/WORKSTATION_MOBILE_AUTH_DESIGN.md).
-The `mobile/` Expo project is a starter only; web phone approval, one-hour
-workstation sessions, a single canonical Chat group, and on-site alerts are
-not implemented yet.
+The [Expo mobile client](mobile/README.md) supports native Huddle, Time Off,
+Schedule, and Chat, with invitation enrollment and account controls. See
+[mobile store release](docs/MOBILE_STORE_RELEASE.md) for the submission gates.
+The [mobile authentication and Chat design](docs/WORKSTATION_MOBILE_AUTH_DESIGN.md)
+tracks workstation phone approval, timeouts, the canonical Chat group, and on-site alerts.
 
 The [veterinary team and naming brief](docs/VETERINARY_TEAM_NAMING_BRIEF.md)
 records public industry research and criteria for choosing a product name with

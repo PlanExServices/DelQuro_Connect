@@ -24,13 +24,18 @@ def verify_password(plain: str, hashed: str) -> bool:
         return False
 
 
-def create_access_token(user_id: str, email: str) -> str:
+def create_access_token(
+    user_id: str, email: str, *, session_id: str | None = None,
+    lifetime: timedelta = timedelta(days=TOKEN_TTL_DAYS),
+) -> str:
     payload = {
         "sub": user_id,
         "email": email,
-        "exp": datetime.now(timezone.utc) + timedelta(days=TOKEN_TTL_DAYS),
+        "exp": datetime.now(timezone.utc) + lifetime,
         "type": "access",
     }
+    if session_id is not None:
+        payload["sid"] = session_id
     return jwt.encode(payload, get_jwt_secret(), algorithm=JWT_ALGORITHM)
 
 

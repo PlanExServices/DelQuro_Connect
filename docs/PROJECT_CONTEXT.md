@@ -26,7 +26,7 @@ This file is the durable project brief for future work in this repository. Updat
 
 ## Current implementation boundary
 
-- The web UI has local preview improvements; the Expo native project is a starter. The phone approval flow, configurable one-hour web sessions, canonical group migration, and on-site push alerts remain designs rather than completed features. Check the [README implementation status](../README.md#implementation-status-read-me-first) before claiming a feature works.
+- The Expo mobile candidate provides native teammate workflows. The [mobile release record](MOBILE_STORE_RELEASE.md) covers distribution, disclosure and device gates. The phone approval flow, configurable one-hour web sessions, canonical group migration and on-site push alerts remain design work.
 - The working name remains provisional while the owner and team consider names.
 
 ## Campus identity and survey (October 2026)

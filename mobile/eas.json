@@ -1,0 +1,22 @@
+{
+  "cli": {
+    "appVersionSource": "remote"
+  },
+  "build": {
+    "preview": {
+      "distribution": "internal",
+      "environment": "preview",
+      "env": { "CONNECT_REQUIRE_HTTPS": "1" },
+      "ios": { "image": "sdk-57" },
+      "android": { "image": "sdk-57", "buildType": "apk" }
+    },
+    "production": {
+      "distribution": "store",
+      "environment": "production",
+      "autoIncrement": true,
+      "env": { "CONNECT_REQUIRE_HTTPS": "1" },
+      "ios": { "image": "sdk-57" },
+      "android": { "image": "sdk-57", "buildType": "app-bundle" }
+    }
+  }
+}

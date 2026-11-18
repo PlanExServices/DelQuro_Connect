@@ -17,6 +17,7 @@ import ChatThread from "@/pages/ChatThread";
 import Celebrations from "@/pages/Celebrations";
 import More from "@/pages/More";
 import Profile from "@/pages/Profile";
+import { AccountDeletion, CommunityGuidelines, Privacy, Support } from "@/pages/StorePolicy";
 import AdminDashboard from "@/pages/more/AdminDashboard";
 import Directory from "@/pages/more/Directory";
 import Roles from "@/pages/more/Roles";
@@ -58,6 +59,10 @@ function App() {
             <Route path="/setup" element={<Setup />} />
             <Route path="/login" element={<Login />} />
             <Route path="/register" element={<Register />} />
+            <Route path="/privacy" element={<Privacy />} />
+            <Route path="/support" element={<Support />} />
+            <Route path="/account-deletion" element={<AccountDeletion />} />
+            <Route path="/community-guidelines" element={<CommunityGuidelines />} />
 
             <Route element={<Protected><AppLayout /></Protected>}>
               <Route path="/huddle" element={<Huddle />} />

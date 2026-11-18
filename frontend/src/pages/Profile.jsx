@@ -135,17 +135,21 @@ function PasswordModal({ onClose }) {
   );
 }
 
-function DeleteModal({ onClose, onDone }) {
+export function DeleteModal({ onClose, onDone }) {
   const [pwd, setPwd] = useState("");
+  const [submitting, setSubmitting] = useState(false);
   const submit = async () => {
+    if (!pwd || submitting) return;
+    setSubmitting(true);
     try { await api.delete("/me", { data: { current_password: pwd } }); toast.success("Account deleted"); onDone(); }
     catch (e) { toast.error(apiError(e)); }
+    finally { setSubmitting(false); }
   };
   return (
     <Modal open onClose={onClose} title="Delete account" testId="delete-modal"
-      footer={<Btn variant="danger" onClick={submit} className="w-full" data-testid="confirm-delete">Delete my account</Btn>}>
-      <p className="text-sm mb-4" style={{ color: "var(--text-secondary)" }}>This permanently removes your account. Enter your password to confirm.</p>
-      <Field label="Current password"><input type="password" className={inputCls} style={inputStyle} value={pwd} onChange={(e) => setPwd(e.target.value)} data-testid="delete-password" /></Field>
+      footer={<Btn variant="danger" onClick={submit} disabled={!pwd || submitting} className="w-full" data-testid="confirm-delete">{submitting ? "Deleting…" : "Delete my account"}</Btn>}>
+      <p className="text-sm mb-4" style={{ color: "var(--text-secondary)" }}>This permanently removes your account, messages, posts and time-off requests. Confirm with your password.</p>
+      <Field label="Current password"><input type="password" autoComplete="current-password" className={inputCls} style={inputStyle} value={pwd} onChange={(e) => setPwd(e.target.value)} data-testid="delete-password" /></Field>
     </Modal>
   );
 }
