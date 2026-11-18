@@ -5,7 +5,7 @@ import { Button, colors, Field, Icon, Page, Problem, PublicLinks, ui, useAction 
 
 export function TermsCheck({ accepted, onChange }: { accepted: boolean; onChange: (value: boolean) => void }) {
   return (
-    <Pressable accessibilityRole="checkbox" accessibilityState={{ checked: accepted }}
+    <Pressable accessibilityRole="checkbox" accessibilityState={{ checked: accepted }} aria-checked={accepted}
       onPress={() => onChange(!accepted)} style={styles.check}>
       <Icon name={accepted ? 'checkbox' : 'square-outline'} />
       <Text style={[ui.body, { flex: 1 }]}>I agree to the Community Guidelines.</Text>
