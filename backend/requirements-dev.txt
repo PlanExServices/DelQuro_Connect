@@ -5,3 +5,5 @@
 # in-memory MongoDB stand-in, so no local MongoDB installation is required.
 -r requirements.txt
 mongomock-motor>=0.0.36
+# Starlette TestClient exercises the app without a remote service.
+httpx>=0.28,<1

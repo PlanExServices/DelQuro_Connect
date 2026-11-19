@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { useNavigate, Link } from "react-router-dom";
+import { useNavigate, Link, useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
 import { Logo } from "@/components/Logo";
 import { Btn, Field, inputCls, inputStyle } from "@/components/kit";
@@ -12,6 +12,7 @@ export default function Login() {
   const { login } = useAuth();
   const { campus } = useCampus();
   const navigate = useNavigate();
+  const [search] = useSearchParams();
   const [form, setForm] = useState({ email: "", password: "" });
   const [busy, setBusy] = useState(false);
   const [needsSetup, setNeedsSetup] = useState(false);
@@ -31,7 +32,7 @@ export default function Login() {
     setBusy(true);
     try {
       await login(form.email, form.password);
-      navigate("/huddle", { replace: true });
+      navigate(search.get("continue") === "delete-account" ? "/account-deletion" : "/huddle", { replace: true });
     } catch (err) {
       toast.error(apiError(err));
     } finally {
@@ -71,6 +72,10 @@ export default function Login() {
               Have an invitation? <Link to="/register" className="font-semibold" style={{ color: "var(--teal-dark)" }}>Create an account</Link>
             </p>
           )}
+          <div className="mt-5 flex flex-wrap justify-center gap-3 text-sm" style={{ color: "var(--teal-dark)" }}>
+            <Link to="/privacy">Privacy policy</Link>
+            <Link to="/support">Support</Link>
+          </div>
         </div>
       </div>
     </div>

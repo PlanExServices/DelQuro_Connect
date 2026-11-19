@@ -9,42 +9,45 @@ import requests
 BASE_URL = os.environ.get("BACKEND_URL", "http://localhost:8000").rstrip("/")
 API = f"{BASE_URL}/api"
 
-ADMIN_EMAIL = "planexservices@gmail.com"
-ADMIN_PASS = "Delquro2026"
-STAFF_EMAIL = "sam@hospital.com"
-STAFF_PASS = "Vetteam1"
-MANAGER_EMAIL = "maria@hospital.com"
-MANAGER_PASS = "Vetteam1"
+ADMIN_EMAIL = os.environ.get("CONNECT_TEST_ADMIN_EMAIL")
+ADMIN_PASS = os.environ.get("CONNECT_TEST_ADMIN_PASSWORD")
+STAFF_EMAIL = os.environ.get("CONNECT_TEST_STAFF_EMAIL")
+STAFF_PASS = os.environ.get("CONNECT_TEST_STAFF_PASSWORD")
+MANAGER_EMAIL = os.environ.get("CONNECT_TEST_MANAGER_EMAIL")
+MANAGER_PASS = os.environ.get("CONNECT_TEST_MANAGER_PASSWORD")
 
 
 # ---------- session helpers ----------
 def _login(email, password):
+    if not email or not password:
+        pytest.skip("Configure the CONNECT_TEST_* credentials for the isolated test workspace.")
     r = requests.post(f"{API}/auth/login", json={"email": email, "password": password}, timeout=15)
     return r
 
 
+def _test_token(email, password):
+    login = _login(email, password)
+    if login.status_code != 200:
+        pytest.skip(f"Test account sign-in failed ({login.status_code})")
+    token = login.json()["access_token"]
+    acceptance = requests.post(f"{API}/mobile/community/accept", headers=_h(token), timeout=10)
+    assert acceptance.status_code == 200, acceptance.text
+    return token
+
+
 @pytest.fixture(scope="session")
 def admin_token():
-    r = _login(ADMIN_EMAIL, ADMIN_PASS)
-    if r.status_code != 200:
-        pytest.skip(f"admin login failed: {r.status_code} {r.text}")
-    return r.json()["access_token"]
+    return _test_token(ADMIN_EMAIL, ADMIN_PASS)
 
 
 @pytest.fixture(scope="session")
 def staff_token():
-    r = _login(STAFF_EMAIL, STAFF_PASS)
-    if r.status_code != 200:
-        pytest.skip(f"staff login failed: {r.status_code} {r.text}")
-    return r.json()["access_token"]
+    return _test_token(STAFF_EMAIL, STAFF_PASS)
 
 
 @pytest.fixture(scope="session")
 def manager_token():
-    r = _login(MANAGER_EMAIL, MANAGER_PASS)
-    if r.status_code != 200:
-        pytest.skip(f"manager login failed: {r.status_code} {r.text}")
-    return r.json()["access_token"]
+    return _test_token(MANAGER_EMAIL, MANAGER_PASS)
 
 
 def _h(tok):
@@ -226,7 +229,7 @@ class TestSchedules:
         assert lst.status_code == 200
         assert any(s["id"] == sched["id"] for s in lst.json())
 
-        f = requests.get(f"{API}/files/{sched['file_id']}", params={"token": admin_token}, timeout=10)
+        f = requests.get(f"{API}/files/{sched['file_id']}", headers=_h(admin_token), timeout=10)
         assert f.status_code == 200
         assert f.content == b"scheduledata"
 
@@ -237,7 +240,7 @@ class TestUpload:
         r = requests.post(f"{API}/upload", headers=_h(admin_token), files=files, timeout=15)
         assert r.status_code == 200
         fid = r.json()["id"]
-        f = requests.get(f"{API}/files/{fid}", params={"token": admin_token}, timeout=10)
+        f = requests.get(f"{API}/files/{fid}", headers=_h(admin_token), timeout=10)
         assert f.status_code == 200
         assert f.content == b"pngbytes"
 
@@ -261,7 +264,7 @@ class TestChat:
     def test_send_message_image(self, staff_token, admin_token):
         # first upload an image
         files = {"file": ("i.png", io.BytesIO(b"img"), "image/png")}
-        up = requests.post(f"{API}/upload", headers=_h(admin_token), files=files, timeout=10)
+        up = requests.post(f"{API}/upload", headers=_h(staff_token), files=files, timeout=10)
         img_id = up.json()["id"]
         cid = pytest.everyone_chat_id
         r = requests.post(f"{API}/chats/{cid}/messages", headers=_h(staff_token),

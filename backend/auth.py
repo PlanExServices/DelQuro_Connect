@@ -24,19 +24,27 @@ def verify_password(plain: str, hashed: str) -> bool:
         return False
 
 
-def create_access_token(user_id: str, email: str) -> str:
+def create_access_token(
+    user_id: str, email: str, *, version: int = 0, session_id: str | None = None,
+    lifetime: timedelta = timedelta(days=TOKEN_TTL_DAYS),
+) -> str:
     payload = {
         "sub": user_id,
         "email": email,
-        "exp": datetime.now(timezone.utc) + timedelta(days=TOKEN_TTL_DAYS),
+        "exp": datetime.now(timezone.utc) + lifetime,
         "type": "access",
+        "ver": version,
     }
+    if session_id is not None:
+        payload["sid"] = session_id
     return jwt.encode(payload, get_jwt_secret(), algorithm=JWT_ALGORITHM)
 
 
 def decode_token(token: str) -> dict:
     try:
-        payload = jwt.decode(token, get_jwt_secret(), algorithms=[JWT_ALGORITHM])
+        payload = jwt.decode(
+            token, get_jwt_secret(), algorithms=[JWT_ALGORITHM], options={"require": ["sub", "exp"]},
+        )
         if payload.get("type") != "access":
             raise HTTPException(status_code=401, detail="Invalid token type")
         return payload
@@ -50,7 +58,4 @@ def token_from_request(request: Request) -> str:
     auth_header = request.headers.get("Authorization", "")
     if auth_header.startswith("Bearer "):
         return auth_header[7:]
-    token = request.query_params.get("token")
-    if token:
-        return token
     raise HTTPException(status_code=401, detail="Not authenticated")

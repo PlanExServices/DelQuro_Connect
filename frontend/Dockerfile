@@ -12,7 +12,7 @@
 # the backend application's page, or use its public https:// URL).
 
 # ---------- stage 1: build ----------
-FROM node:20-bookworm-slim AS build
+FROM node:24-bookworm-slim AS build
 
 WORKDIR /app
 
@@ -25,10 +25,7 @@ COPY . .
 # empty (the default), the app calls the relative /api path, which nginx below
 # proxies to BACKEND_URL — the recommended setup.
 ARG REACT_APP_BACKEND_URL=""
-ENV REACT_APP_BACKEND_URL=$REACT_APP_BACKEND_URL \
-    CI=false \
-    GENERATE_SOURCEMAP=false \
-    DISABLE_ESLINT_PLUGIN=true
+ENV REACT_APP_BACKEND_URL=$REACT_APP_BACKEND_URL
 RUN npm run build
 
 # ---------- stage 2: serve ----------

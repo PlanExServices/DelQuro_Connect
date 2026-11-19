@@ -8,10 +8,11 @@ import calendar
 from urllib.parse import urlsplit
 from pathlib import Path
 from datetime import datetime, timezone, timedelta, date as date_cls
-from typing import List, Optional
+from typing import List, Literal, Optional
 
 from fastapi import FastAPI, APIRouter, HTTPException, Request, Depends, UploadFile, File, Form, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, Response
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
@@ -19,6 +20,7 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from bson import ObjectId
 from bson.binary import Binary
 from pydantic import BaseModel, EmailStr, Field, field_validator
+from pymongo.errors import DuplicateKeyError
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
@@ -27,6 +29,11 @@ from auth import (
     hash_password, verify_password, create_access_token,
     decode_token, token_from_request,
 )
+from account_deletion import purge_account_data
+from content_policy import (
+    TERMS_VERSION, REPORT_TARGETS, VISIBLE, ContentReport, ReviewReport, filter_text, visible_from,
+)
+from mobile_sessions import refresh_digest, rotate_session, session_is_active, start_session
 
 def require_env(name: str, default: Optional[str] = None) -> str:
     """Fail fast (with a readable message) instead of raising a bare KeyError."""
@@ -59,6 +66,7 @@ logger = logging.getLogger("delquro")
 # MongoDB documents are capped at 16 MB, so reject oversized uploads up front
 # with a clear 413 instead of letting the insert blow up with a 500.
 MAX_UPLOAD_BYTES = 15 * 1024 * 1024
+CHAT_SOCKET_PROTOCOL = "connect-chat"
 
 # Login brute-force protection
 LOCKOUT_ATTEMPTS = 5
@@ -86,6 +94,23 @@ class NormalizePathMiddleware:
             scope = dict(scope)
             scope["path"] = re.sub(r"/{2,}", "/", scope["path"])
         await self.app(scope, receive, send)
+
+
+@app.middleware("http")
+async def protect_web_responses(request: Request, call_next):
+    response = await call_next(request)
+    response.headers.setdefault("Referrer-Policy", "no-referrer")
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    if request.url.path.startswith("/api/"):
+        response.headers.setdefault("Cache-Control", "private, no-store")
+    return response
+
+
+@app.exception_handler(RequestValidationError)
+async def redact_validation_inputs(request: Request, exc: RequestValidationError):
+    errors = [{"type": error["type"], "loc": error["loc"], "msg": error["msg"]} for error in exc.errors()]
+    return JSONResponse(status_code=422, content={"detail": errors})
 
 
 def ensure_upload_size(content: bytes) -> None:
@@ -191,20 +216,43 @@ def public_user(u: dict) -> dict:
         "kudos": u.get("kudos", 0),
         "preferences": u.get("preferences", DEFAULT_PREFERENCES),
         "permissions": compute_permissions(role),
+        "community_terms_accepted": u.get("community_terms_version") == TERMS_VERSION,
+        "account_deletion_pending": u.get("account_deletion_pending", False),
     }
 
 
 # ---------------------------------------------------------------- auth deps
+async def authenticated_user(payload: dict, *, allow_mobile: bool) -> dict:
+    if not ObjectId.is_valid(payload.get("sub")):
+        raise HTTPException(status_code=401, detail="Invalid token")
+    user = await db.users.find_one({"_id": ObjectId(payload["sub"])})
+    if not user or user.get("suspended"):
+        raise HTTPException(status_code=401, detail="Account unavailable")
+    # The existing mobile session version now also invalidates browser tokens.
+    if payload.get("ver", 0) != user.get("mobile_session_version", 0):
+        raise HTTPException(status_code=401, detail="Session expired. Sign in again.")
+    if "sid" in payload and (
+        not allow_mobile or not await session_is_active(db, payload["sid"], user)
+    ):
+        raise HTTPException(status_code=401, detail="Session expired. Sign in again.")
+    return user
+
+
 async def get_current_user(request: Request) -> dict:
     token = token_from_request(request)
     payload = decode_token(token)
-    try:
-        user = await db.users.find_one({"_id": ObjectId(payload["sub"])})
-    except Exception:
-        raise HTTPException(status_code=401, detail="Invalid token")
-    if not user:
-        raise HTTPException(status_code=401, detail="User not found")
+    user = await authenticated_user(payload, allow_mobile=True)
+    request.state.mobile_session = "sid" in payload
+    deleting = request.method == "DELETE" and request.url.path == "/api/me"
+    checking_account = request.method == "GET" and request.url.path == "/api/auth/me"
+    if user.get("account_deletion_pending") and not (deleting or checking_account):
+        raise HTTPException(403, "Account deletion is pending. Reopen Delete account to finish.")
     return user
+
+
+def require_community_terms(user: dict) -> None:
+    if user.get("community_terms_version") != TERMS_VERSION:
+        raise HTTPException(403, "Accept the Community Guidelines before posting.")
 
 
 def require(perm: str):
@@ -232,12 +280,24 @@ class RegisterBody(BaseModel):
     def strong(cls, v):
         if len(v) < 8 or not any(c.isalpha() for c in v) or not any(c.isdigit() for c in v):
             raise ValueError("Password must be at least 8 characters and include a letter and a number")
+        if len(v.encode("utf-8")) > 72:
+            raise ValueError("Password must be at most 72 bytes")
         return v
 
 
 class LoginBody(BaseModel):
     email: EmailStr
     password: str
+
+
+class MobileRegistration(RegisterBody):
+    name: str = Field(min_length=1, max_length=100)
+    code: str = Field(min_length=1, max_length=32)
+    community_terms_accepted: Literal[True]
+
+
+class RefreshBody(BaseModel):
+    refresh_token: str = Field(min_length=43, max_length=43)
 
 
 class MeUpdate(BaseModel):
@@ -293,6 +353,8 @@ class PasswordBody(BaseModel):
     def strong(cls, v):
         if len(v) < 8 or not any(c.isalpha() for c in v) or not any(c.isdigit() for c in v):
             raise ValueError("Password must be at least 8 characters and include a letter and a number")
+        if len(v.encode("utf-8")) > 72:
+            raise ValueError("Password must be at most 72 bytes")
         return v
 
 
@@ -413,11 +475,10 @@ async def auth_status():
 
 
 async def check_lockout(identifier: str):
-    rec = await db.login_attempts.find_one({"identifier": identifier})
-    if not rec or rec.get("count", 0) < LOCKOUT_ATTEMPTS:
-        return
-    locked_until = rec.get("locked_until")
-    if locked_until and datetime.fromisoformat(locked_until) > datetime.now(timezone.utc):
+    rec = await db.login_attempts.find_one({
+        "identifier": identifier, "count": {"$gte": LOCKOUT_ATTEMPTS}, "locked_until": {"$gt": now_iso()},
+    }, {"_id": 1})
+    if rec:
         raise HTTPException(
             status_code=429,
             detail=f"Too many failed attempts. Try again in {LOCKOUT_MINUTES} minutes.",
@@ -425,34 +486,26 @@ async def check_lockout(identifier: str):
 
 
 async def register_fail(identifier: str):
-    """Count a failed login. The counter resets once a lockout window expires."""
+    """Count failures atomically across web and mobile sign-in requests."""
     now = datetime.now(timezone.utc)
-    rec = await db.login_attempts.find_one({"identifier": identifier})
-    locked_until = rec.get("locked_until") if rec else None
-    expired = True
-    if locked_until:
-        try:
-            expired = datetime.fromisoformat(locked_until) <= now
-        except ValueError:
-            expired = True
-    count = 1 if (not rec or expired) else rec.get("count", 0) + 1
-    await db.login_attempts.update_one(
-        {"identifier": identifier},
-        {
-            "$set": {
-                "count": count,
-                "locked_until": (now + timedelta(minutes=LOCKOUT_MINUTES)).isoformat(),
-                # Stored as a BSON date (not a string) so the TTL index below
-                # actually expires the record.
-                "updated_at": now,
-            }
-        },
-        upsert=True,
-    )
+    key = {"_id": identifier}
+    changes = [{"$set": {
+        "identifier": {"$literal": identifier},
+        "count": {"$cond": [
+            {"$gt": [{"$ifNull": ["$locked_until", ""]}, now.isoformat()]},
+            {"$add": [{"$ifNull": ["$count", 0]}, 1]},
+            1,
+        ]},
+        "locked_until": (now + timedelta(minutes=LOCKOUT_MINUTES)).isoformat(),
+        "updated_at": now,
+    }}]
+    try:
+        await db.login_attempts.update_one(key, changes, upsert=True)
+    except DuplicateKeyError:
+        await db.login_attempts.update_one(key, changes)
 
 
-@api.post("/auth/register")
-async def register(body: RegisterBody):
+async def create_account(body: RegisterBody, *, mobile: bool = False):
     email = body.email.lower()
     if await db.users.find_one({"email": email}):
         raise HTTPException(status_code=400, detail="An account with this email already exists")
@@ -462,8 +515,10 @@ async def register(body: RegisterBody):
     campus = body.campus
     job_title = body.job_title
     location_id = None
+    invite = None
+    user_id = ObjectId()
 
-    if body.bootstrap_code:
+    if body.bootstrap_code and not mobile:
         if any_admin is not None:
             raise HTTPException(status_code=400, detail="Workspace is already set up. Please sign in.")
         configured_code = os.environ.get("ADMIN_BOOTSTRAP_CODE", "")
@@ -480,9 +535,12 @@ async def register(body: RegisterBody):
             raise HTTPException(status_code=400, detail="This invite code has expired")
         if invite.get("used"):
             raise HTTPException(status_code=400, detail="This invite code has already been used")
+        if invite.get("channel") == "email" and invite.get("value"):
+            if email != invite["value"].strip().lower():
+                raise HTTPException(400, "This invitation is for a different email address")
         claimed = await db.invites.update_one(
             {"_id": invite["_id"], "used": False},
-            {"$set": {"used": True, "used_at": now_iso()}},
+            {"$set": {"used": True, "used_at": now_iso(), "registered_user_id": str(user_id)}},
         )
         if claimed.matched_count != 1:
             raise HTTPException(status_code=400, detail="This invite code has already been used")
@@ -494,6 +552,7 @@ async def register(body: RegisterBody):
         raise HTTPException(status_code=400, detail="An invitation code is required")
 
     doc = {
+        "_id": user_id,
         "email": email,
         "password_hash": hash_password(body.password),
         "name": body.name,
@@ -508,14 +567,28 @@ async def register(body: RegisterBody):
         "preferences": DEFAULT_PREFERENCES,
         "created_at": now_iso(),
     }
-    res = await db.users.insert_one(doc)
-    doc["_id"] = res.inserted_id
-    token = create_access_token(str(res.inserted_id), email)
+    if mobile:
+        doc.update(community_terms_version=TERMS_VERSION, community_terms_accepted_at=now_iso())
+    try:
+        await db.users.insert_one(doc)
+    except DuplicateKeyError:
+        if invite:
+            await db.invites.update_one(
+                {"_id": invite["_id"], "registered_user_id": str(user_id)},
+                {"$set": {"used": False}, "$unset": {"used_at": "", "registered_user_id": ""}},
+            )
+        raise HTTPException(400, "An account with this email already exists")
+    return doc
+
+
+@api.post("/auth/register")
+async def register(body: RegisterBody):
+    doc = await create_account(body)
+    token = create_access_token(str(doc["_id"]), doc["email"])
     return {"access_token": token, "user": public_user(doc)}
 
 
-@api.post("/auth/login")
-async def login(body: LoginBody, request: Request):
+async def authenticate(body: LoginBody, *, allow_suspended: bool = False):
     email = body.email.lower()
     identifier = email
     await check_lockout(identifier)
@@ -523,9 +596,49 @@ async def login(body: LoginBody, request: Request):
     if not user or not verify_password(body.password, user["password_hash"]):
         await register_fail(identifier)
         raise HTTPException(status_code=401, detail="Invalid email or password")
-    await db.login_attempts.delete_one({"identifier": identifier})
-    token = create_access_token(str(user["_id"]), email)
+    await db.login_attempts.delete_many({"identifier": identifier})
+    if user.get("suspended") and not allow_suspended:
+        raise HTTPException(403, "Account suspended. Contact your workspace administrator.")
+    return user
+
+
+@api.post("/auth/login")
+async def login(body: LoginBody):
+    user = await authenticate(body)
+    token = create_access_token(str(user["_id"]), user["email"], version=user.get("mobile_session_version", 0))
     return {"access_token": token, "user": public_user(user)}
+
+
+@api.post("/mobile/auth/register")
+async def mobile_register(body: MobileRegistration):
+    user = await create_account(body, mobile=True)
+    return {**await start_session(db, user), "user": public_user(user)}
+
+
+@api.post("/mobile/auth/login")
+async def mobile_login(body: LoginBody):
+    user = await authenticate(body)
+    return {**await start_session(db, user), "user": public_user(user)}
+
+
+@api.post("/mobile/auth/refresh")
+async def mobile_refresh(body: RefreshBody):
+    session, user = await rotate_session(db, body.refresh_token)
+    return {**session, "user": public_user(user)}
+
+
+@api.post("/mobile/auth/logout")
+async def mobile_logout(body: RefreshBody):
+    await db.mobile_sessions.delete_one({"refresh_digest": refresh_digest(body.refresh_token)})
+    return {"ok": True}
+
+
+@api.post("/mobile/community/accept")
+async def accept_community_terms(user: dict = Depends(get_current_user)):
+    await db.users.update_one({"_id": user["_id"]}, {"$set": {
+        "community_terms_version": TERMS_VERSION, "community_terms_accepted_at": now_iso(),
+    }})
+    return {"ok": True}
 
 
 @api.get("/auth/me")
@@ -576,43 +689,76 @@ async def update_prefs(body: PrefsBody, user: dict = Depends(get_current_user)):
 
 
 @api.post("/me/password")
-async def change_password(body: PasswordBody, user: dict = Depends(get_current_user)):
+async def change_password(body: PasswordBody, request: Request, user: dict = Depends(get_current_user)):
     if not verify_password(body.current_password, user["password_hash"]):
         raise HTTPException(status_code=400, detail="Current password is incorrect")
-    await db.users.update_one({"_id": user["_id"]}, {"$set": {"password_hash": hash_password(body.new_password)}})
-    return {"ok": True}
+    version = user.get("mobile_session_version", 0) + 1
+    result = await db.users.update_one({
+        "_id": user["_id"],
+        "password_hash": user["password_hash"],
+        "suspended": {"$ne": True},
+        "account_deletion_pending": {"$ne": True},
+    }, {
+        "$set": {"password_hash": hash_password(body.new_password)},
+        "$inc": {"mobile_session_version": 1},
+    })
+    if not result.matched_count:
+        raise HTTPException(409, "Your account changed. Sign in again to update your password.")
+    await db.mobile_sessions.delete_many({"user_id": user["_id"], "user_version": {"$lt": version}})
+    response = {"ok": True}
+    if not request.state.mobile_session:
+        response["access_token"] = create_access_token(str(user["_id"]), user["email"], version=version)
+    return response
 
 
 @api.delete("/me")
 async def delete_me(body: DeleteMeBody, user: dict = Depends(get_current_user)):
     if not verify_password(body.current_password, user["password_hash"]):
         raise HTTPException(status_code=400, detail="Password is incorrect")
-    if user.get("role") == "admin":
-        other_admin = await db.users.find_one({"role": "admin", "_id": {"$ne": user["_id"]}})
-        if not other_admin:
-            raise HTTPException(status_code=400, detail="You are the only admin. Assign another admin first.")
+    return await delete_or_request_account(user)
 
-    uid = str(user["_id"])
-    # Cascade so a deleted account does not linger as a "ghost" in the team
-    # feed, the kudos spotlight or the time-off calendar.
-    posts = await db.posts.find({"author_id": uid}, {"_id": 1}).to_list(500)
-    post_ids = [str(p["_id"]) for p in posts]
-    if post_ids:
-        await db.comments.delete_many({"post_id": {"$in": post_ids}})
-    await db.posts.delete_many({"author_id": uid})
-    await db.comments.delete_many({"author_id": uid})
-    await db.kudos.delete_many({"$or": [{"to_id": uid}, {"from_id": uid}]})
-    await db.timeoff.delete_many({"user_id": uid})
-    await db.chats.update_many({"member_ids": uid}, {"$pull": {"member_ids": uid}})
-    await db.users.delete_one({"_id": user["_id"]})
-    return {"ok": True}
+
+@api.post("/account-deletion")
+async def delete_account_from_web(body: LoginBody):
+    # Password confirmation uses the existing login lockout. This flow issues
+    # no session and also works for a suspended account.
+    user = await authenticate(body, allow_suspended=True)
+    return await delete_or_request_account(user)
+
+
+async def delete_or_request_account(user):
+    await db.users.update_one({"_id": user["_id"]}, {"$set": {"account_deletion_pending": True}})
+    if user.get("role") == "admin":
+        other_admin = await db.users.find_one({
+            "role": "admin", "_id": {"$ne": user["_id"]},
+            "suspended": {"$ne": True}, "account_deletion_pending": {"$ne": True},
+        })
+        if not other_admin:
+            await db.users.update_one({"_id": user["_id"]}, {
+                "$set": {"account_deletion_requested_at": user.get("account_deletion_requested_at") or now_iso()},
+                "$unset": {"account_deletion_pending": ""},
+            })
+            return {"ok": True, "status": "requested"}
+
+    await purge_account_data(db, user)
+    return {"ok": True, "status": "deleted"}
 
 
 # ================================================================ TEAM / META
 @api.get("/team/members")
 async def team_members(user: dict = Depends(get_current_user)):
     users = await db.users.find({}, {"email": 1, "name": 1, "initials": 1, "campus": 1, "role": 1, "job_title": 1, "birthday": 1, "start_date": 1, "location_id": 1, "kudos": 1, "preferences": 1}).to_list(1000)
-    return [public_user(u) for u in users]
+    directory = []
+    for person in users:
+        member = public_user(person)
+        if person["_id"] != user["_id"]:
+            preferences = member["preferences"] or {}
+            if not preferences.get("show_birthday", True):
+                member["birthday"] = None
+            if not preferences.get("show_anniversary", True):
+                member["start_date"] = None
+        directory.append(member)
+    return directory
 
 
 @api.get("/team/birthdays")
@@ -707,7 +853,7 @@ async def set_location(uid: str, location_id: str, user: dict = Depends(require(
 async def serialize_post(p: dict, user_id: str) -> dict:
     likes = p.get("likes", [])
     acknowledgments = p.get("acknowledged_by", [])
-    comment_count = await db.comments.count_documents({"post_id": str(p["_id"])})
+    comment_count = await db.comments.count_documents({"post_id": str(p["_id"]), **VISIBLE})
     return {
         "id": str(p["_id"]),
         "author_name": p.get("author_name"),
@@ -729,12 +875,15 @@ async def serialize_post(p: dict, user_id: str) -> dict:
 
 @api.get("/posts")
 async def list_posts(user: dict = Depends(get_current_user)):
-    posts = await db.posts.find().sort("created_at", -1).to_list(500)
+    posts = await db.posts.find(visible_from("author_id", user)).sort("created_at", -1).to_list(500)
     return [await serialize_post(p, str(user["_id"])) for p in posts]
 
 
 @api.post("/posts")
 async def create_post(body: PostBody, user: dict = Depends(require("post_huddle"))):
+    require_community_terms(user)
+    filter_text(body.title, body.content)
+    await require_attachment_owner(body.image_id, user)
     if body.is_protocol and (not (body.title or "").strip() or not (body.protocol_version or "").strip()):
         raise HTTPException(status_code=400, detail="A protocol needs a title and version")
     doc = {
@@ -757,7 +906,7 @@ async def create_post(body: PostBody, user: dict = Depends(require("post_huddle"
 
 @api.post("/posts/{pid}/acknowledge")
 async def acknowledge_protocol(pid: str, user: dict = Depends(get_current_user)):
-    p = await db.posts.find_one({"_id": ObjectId(pid)})
+    p = await db.posts.find_one({"_id": ObjectId(pid), **visible_from("author_id", user)}) if ObjectId.is_valid(pid) else None
     if not p or not p.get("is_protocol"):
         raise HTTPException(status_code=404, detail="Protocol not found")
     await db.posts.update_one({"_id": ObjectId(pid)}, {"$addToSet": {"acknowledged_by": str(user["_id"])}})
@@ -796,7 +945,9 @@ async def like_post(pid: str, user: dict = Depends(get_current_user)):
 
 @api.get("/posts/{pid}/comments")
 async def list_comments(pid: str, user: dict = Depends(get_current_user)):
-    comments = await db.comments.find({"post_id": pid}).sort("created_at", 1).to_list(500)
+    if not ObjectId.is_valid(pid) or not await db.posts.find_one({"_id": ObjectId(pid), **visible_from("author_id", user)}):
+        raise HTTPException(404, "Post not found")
+    comments = await db.comments.find({"post_id": pid, **visible_from("author_id", user)}).sort("created_at", 1).to_list(500)
     return [{
         "id": str(c["_id"]),
         "author_name": c.get("author_name"),
@@ -809,7 +960,9 @@ async def list_comments(pid: str, user: dict = Depends(get_current_user)):
 
 @api.post("/posts/{pid}/comments")
 async def add_comment(pid: str, body: CommentBody, user: dict = Depends(get_current_user)):
-    if not await db.posts.find_one({"_id": ObjectId(pid)}):
+    require_community_terms(user)
+    filter_text(body.text)
+    if not ObjectId.is_valid(pid) or not await db.posts.find_one({"_id": ObjectId(pid), **visible_from("author_id", user)}):
         raise HTTPException(status_code=404, detail="Post not found")
     doc = {
         "post_id": pid,
@@ -832,30 +985,38 @@ async def add_comment(pid: str, body: CommentBody, user: dict = Depends(get_curr
 
 
 # ================================================================ TIME OFF
-def serialize_timeoff(t: dict) -> dict:
+def serialize_timeoff(t: dict, *, include_reason: bool = True) -> dict:
     return {
         "id": str(t["_id"]),
         "user_id": t.get("user_id"),
         "name": t.get("name"),
         "initials": t.get("initials"),
         "date": t.get("date"),
-        "reason": t.get("reason"),
+        "reason": t.get("reason") if include_reason else None,
         "status": t.get("status"),
         "created_at": t.get("created_at"),
     }
 
 
 @api.get("/timeoff")
-async def timeoff_day(date: str, user: dict = Depends(get_current_user)):
-    items = await db.timeoff.find({"date": date}).to_list(500)
-    return [serialize_timeoff(t) for t in items]
+async def timeoff_day(date: str, request: Request, user: dict = Depends(get_current_user)):
+    query = {"date": date}
+    if request.state.mobile_session:
+        query["user_id"] = str(user["_id"])
+    items = await db.timeoff.find(query).to_list(500)
+    approver = compute_permissions(user.get("role", "staff"))["approve_timeoff"]
+    return [serialize_timeoff(t, include_reason=approver or t.get("user_id") == str(user["_id"])) for t in items]
 
 
 @api.get("/timeoff/month")
-async def timeoff_month(year: int, month: int, user: dict = Depends(get_current_user)):
+async def timeoff_month(year: int, month: int, request: Request, user: dict = Depends(get_current_user)):
     prefix = f"{year:04d}-{month:02d}"
-    items = await db.timeoff.find({"date": {"$regex": f"^{prefix}"}}).to_list(1000)
-    return [serialize_timeoff(t) for t in items]
+    query = {"date": {"$regex": f"^{prefix}"}}
+    if request.state.mobile_session:
+        query["user_id"] = str(user["_id"])
+    items = await db.timeoff.find(query).to_list(1000)
+    approver = compute_permissions(user.get("role", "staff"))["approve_timeoff"]
+    return [serialize_timeoff(t, include_reason=approver or t.get("user_id") == str(user["_id"])) for t in items]
 
 
 @api.post("/timeoff")
@@ -976,7 +1137,7 @@ def serialize_schedule(s: dict) -> dict:
 async def list_schedules(period: str, user: dict = Depends(get_current_user)):
     if period not in ("current", "upcoming", "previous", "all"):
         raise HTTPException(status_code=400, detail="Invalid schedule period")
-    items = await db.schedules.find().sort("created_at", -1).to_list(500)
+    items = await db.schedules.find(visible_from("uploader_id", user)).sort("created_at", -1).to_list(500)
     if period != "all":
         today = datetime.now(timezone.utc).date().isoformat()
         def active_period(schedule):
@@ -1003,6 +1164,8 @@ async def upload_schedule(
     department: Optional[str] = Form(None),
     user: dict = Depends(require("manage_schedules")),
 ):
+    require_community_terms(user)
+    filter_text(title)
     if period not in ("current", "upcoming", "previous"):
         raise HTTPException(status_code=400, detail="Invalid schedule period")
     if bool(effective_start) != bool(effective_end):
@@ -1061,6 +1224,7 @@ async def delete_schedule(sid: str, user: dict = Depends(require("manage_schedul
 # ================================================================ UPLOADS / FILES
 @api.post("/upload")
 async def upload_file(file: UploadFile = File(...), user: dict = Depends(get_current_user)):
+    require_community_terms(user)
     content = await file.read()
     ensure_upload_size(content)
     fdoc = {
@@ -1068,24 +1232,49 @@ async def upload_file(file: UploadFile = File(...), user: dict = Depends(get_cur
         "content_type": file.content_type or "application/octet-stream",
         "file_name": file.filename,
         "size": len(content),
+        "owner_id": str(user["_id"]),
         "created_at": now_iso(),
     }
     res = await db.files.insert_one(fdoc)
     return {"id": str(res.inserted_id)}
 
 
+async def require_attachment_owner(fid, user):
+    if not fid:
+        return
+    if not ObjectId.is_valid(fid) or not await db.files.find_one(
+        {"_id": ObjectId(fid), "owner_id": str(user["_id"])}, {"_id": 1},
+    ):
+        raise HTTPException(404, "Attachment not found")
+
+
 @api.get("/files/{fid}")
 async def serve_file(fid: str, request: Request):
-    # auth via bearer OR ?token=
-    token = token_from_request(request)
-    decode_token(token)
-    try:
-        f = await db.files.find_one({"_id": ObjectId(fid)})
-    except Exception:
+    user = await get_current_user(request)
+    if not ObjectId.is_valid(fid):
         raise HTTPException(status_code=404, detail="File not found")
+    f = await db.files.find_one({"_id": ObjectId(fid)})
     if not f:
         raise HTTPException(status_code=404, detail="File not found")
-    return Response(content=bytes(f["content"]), media_type=f.get("content_type", "application/octet-stream"))
+    if not await can_view_attachment(fid, user):
+        own_staged_file = f.get("owner_id") == str(user["_id"]) and not await linked_attachment(fid)
+        if not own_staged_file:
+            raise HTTPException(status_code=404, detail="File not found")
+    return file_response(f)
+
+
+def file_response(f):
+    media_type = f.get("content_type", "")
+    headers = {
+        "Cache-Control": "private, no-store",
+        "X-Content-Type-Options": "nosniff",
+        "Content-Security-Policy": "sandbox",
+        "Referrer-Policy": "no-referrer",
+    }
+    if media_type not in ("image/png", "image/jpeg", "image/gif", "image/webp", "application/pdf"):
+        media_type = "application/octet-stream"
+        headers["Content-Disposition"] = "attachment"
+    return Response(content=bytes(f["content"]), media_type=media_type, headers=headers)
 
 
 # ================================================================ CHAT
@@ -1093,19 +1282,41 @@ class ChatHub:
     def __init__(self):
         self.rooms: dict = {}
 
-    async def connect(self, cid: str, ws: WebSocket):
-        await ws.accept()
-        self.rooms.setdefault(cid, set()).add(ws)
+    async def connect(self, cid: str, ws: WebSocket, user_id: ObjectId, payload: dict):
+        await ws.accept(subprotocol=CHAT_SOCKET_PROTOCOL)
+        self.rooms.setdefault(cid, {})[ws] = (user_id, payload.get("ver", 0), int(payload["exp"]))
 
     def disconnect(self, cid: str, ws: WebSocket):
-        self.rooms.get(cid, set()).discard(ws)
+        room = self.rooms.get(cid)
+        if room is not None:
+            room.pop(ws, None)
+            if not room:
+                self.rooms.pop(cid, None)
 
     async def broadcast(self, cid: str, payload: dict, exclude: WebSocket = None):
-        for ws in list(self.rooms.get(cid, set())):
+        room = dict(self.rooms.get(cid, {}))
+        if not room:
+            return
+        chat = await db.chats.find_one({"_id": ObjectId(cid)})
+        people = await db.users.find({
+            "_id": {"$in": list({membership[0] for membership in room.values()})},
+            "suspended": {"$ne": True},
+            "account_deletion_pending": {"$ne": True},
+        }, {"blocked_user_ids": 1, "mobile_session_version": 1}).to_list(None)
+        current = {person["_id"]: person for person in people}
+        author_id = payload.get("user_id") or payload.get("message", {}).get("sender_id")
+        now = datetime.now(timezone.utc).timestamp()
+        for ws, (user_id, version, expires_at) in room.items():
             if exclude is not None and ws is exclude:
                 continue
             try:
-                await ws.send_json(payload)
+                user = current.get(user_id)
+                if (not user or not chat or not can_access_chat(chat, user)
+                    or version != user.get("mobile_session_version", 0) or expires_at <= now):
+                    await ws.close(code=1008)
+                    self.disconnect(cid, ws)
+                elif author_id not in user.get("blocked_user_ids", []):
+                    await ws.send_json(payload)
             except Exception:
                 self.disconnect(cid, ws)
 
@@ -1113,19 +1324,18 @@ class ChatHub:
 hub = ChatHub()
 
 
-async def chat_snippet(c: dict, user_id: Optional[str] = None) -> dict:
-    last = await db.messages.find({"chat_id": str(c["_id"])}).sort("created_at", -1).limit(1).to_list(1)
+async def chat_snippet(c: dict, user: dict) -> dict:
+    uid = str(user["_id"])
+    filters = {"chat_id": str(c["_id"]), **visible_from("sender_id", user)}
+    last = await db.messages.find(filters).sort("created_at", -1).limit(1).to_list(1)
     last_message, last_sender = None, None
     if last:
         m = last[0]
         last_sender = m.get("sender_name")
         last_message = "\U0001F4F7 Photo" if (m.get("image_id") and not m.get("text")) else m.get("text")
-    unread_count = 0
-    if user_id:
-        unread_count = await db.messages.count_documents({
-            "chat_id": str(c["_id"]), "sender_id": {"$ne": user_id},
-            "read_by": {"$ne": user_id},
-        })
+    unread_count = await db.messages.count_documents({
+        **filters, "sender_id": {**filters["sender_id"], "$ne": uid}, "read_by": {"$ne": uid},
+    })
     return {
         "id": str(c["_id"]),
         "name": c.get("name"),
@@ -1141,22 +1351,52 @@ async def chat_snippet(c: dict, user_id: Optional[str] = None) -> dict:
 
 
 def can_access_chat(c: dict, user: dict) -> bool:
+    if c.get("moderation_hidden"):
+        return False
     if c.get("is_everyone"):
         return True
     return str(user["_id"]) in c.get("member_ids", [])
 
 
+async def linked_attachment(fid):
+    return (
+        await db.schedules.find_one({"file_id": fid}, {"_id": 1}) is not None or
+        await db.posts.find_one({"image_id": fid}, {"_id": 1}) is not None or
+        await db.messages.find_one({"image_id": fid}, {"_id": 1}) is not None
+    )
+
+
+async def can_view_attachment(fid, user):
+    if await db.schedules.find_one({"file_id": fid, **visible_from("uploader_id", user)}, {"_id": 1}):
+        return True
+    if await db.posts.find_one({"image_id": fid, **visible_from("author_id", user)}, {"_id": 1}):
+        return True
+    async for message in db.messages.find(
+        {"image_id": fid, **visible_from("sender_id", user)}, {"chat_id": 1},
+    ):
+        cid = message.get("chat_id")
+        if ObjectId.is_valid(cid):
+            chat = await db.chats.find_one({"_id": ObjectId(cid)})
+            if chat and can_access_chat(chat, user):
+                return True
+    return False
+
+
 @api.get("/chats")
 async def list_chats(user: dict = Depends(get_current_user)):
     uid = str(user["_id"])
-    chats = await db.chats.find({"$or": [{"is_everyone": True}, {"member_ids": uid}]}).to_list(500)
-    out = [await chat_snippet(c, uid) for c in chats]
+    chats = await db.chats.find({
+        **VISIBLE, "$or": [{"is_everyone": True}, {"member_ids": uid}],
+    }).to_list(500)
+    out = [await chat_snippet(c, user) for c in chats]
     out.sort(key=lambda x: x.get("created_at") or "", reverse=True)
     return out
 
 
 @api.post("/chats")
 async def create_chat(body: ChatBody, user: dict = Depends(get_current_user)):
+    require_community_terms(user)
+    filter_text(body.name, body.description)
     members = list(set(body.member_ids + [str(user["_id"])])) if not body.is_everyone else []
     doc = {
         "name": body.name,
@@ -1169,15 +1409,20 @@ async def create_chat(body: ChatBody, user: dict = Depends(get_current_user)):
     }
     res = await db.chats.insert_one(doc)
     doc["_id"] = res.inserted_id
-    return await chat_snippet(doc)
+    return await chat_snippet(doc, user)
 
 
 @api.get("/chats/{cid}/messages")
-async def list_messages(cid: str, user: dict = Depends(get_current_user)):
-    c = await db.chats.find_one({"_id": ObjectId(cid)})
+async def list_messages(cid: str, request: Request, user: dict = Depends(get_current_user)):
+    c = await db.chats.find_one({"_id": ObjectId(cid)}) if ObjectId.is_valid(cid) else None
     if not c or not can_access_chat(c, user):
         raise HTTPException(status_code=403, detail="Not allowed")
-    msgs = await db.messages.find({"chat_id": cid}).sort("created_at", 1).to_list(1000)
+    query = {"chat_id": cid, **visible_from("sender_id", user)}
+    if request.state.mobile_session:
+        msgs = await db.messages.find(query).sort([("created_at", -1), ("_id", -1)]).limit(100).to_list(100)
+        msgs.reverse()
+    else:
+        msgs = await db.messages.find(query).sort("created_at", 1).to_list(1000)
     return [{
         "id": str(m["_id"]),
         "sender_id": m.get("sender_id"),
@@ -1192,11 +1437,14 @@ async def list_messages(cid: str, user: dict = Depends(get_current_user)):
 
 @api.post("/chats/{cid}/messages")
 async def send_message(cid: str, body: MessageBody, user: dict = Depends(get_current_user)):
-    c = await db.chats.find_one({"_id": ObjectId(cid)})
+    require_community_terms(user)
+    filter_text(body.text)
+    c = await db.chats.find_one({"_id": ObjectId(cid)}) if ObjectId.is_valid(cid) else None
     if not c or not can_access_chat(c, user):
         raise HTTPException(status_code=403, detail="Not allowed")
     if not body.text and not body.image_id:
         raise HTTPException(status_code=400, detail="Message cannot be empty")
+    await require_attachment_owner(body.image_id, user)
     doc = {
         "chat_id": cid,
         "sender_id": str(user["_id"]),
@@ -1223,18 +1471,24 @@ async def send_message(cid: str, body: MessageBody, user: dict = Depends(get_cur
 
 
 @api.websocket("/ws/chat/{cid}")
-async def ws_chat(websocket: WebSocket, cid: str, token: str = ""):
+async def ws_chat(websocket: WebSocket, cid: str):
+    protocols = websocket.scope.get("subprotocols", [])
+    credentials = [protocol[5:] for protocol in protocols if protocol.startswith("auth.")]
+    if CHAT_SOCKET_PROTOCOL not in protocols or len(credentials) != 1:
+        await websocket.close(code=1008)
+        return
+    token = credentials[0]
     try:
         payload = decode_token(token)
-        user = await db.users.find_one({"_id": ObjectId(payload["sub"])})
+        user = await authenticated_user(payload, allow_mobile=False)
         chat = await db.chats.find_one({"_id": ObjectId(cid)})
-        if not user or not chat or not can_access_chat(chat, user):
+        if user.get("account_deletion_pending") or not chat or not can_access_chat(chat, user):
             await websocket.close(code=1008)
             return
     except Exception:
         await websocket.close(code=1008)
         return
-    await hub.connect(cid, websocket)
+    await hub.connect(cid, websocket, user["_id"], payload)
     sender_id = str(user["_id"])
     sender_name = user.get("name")
     try:
@@ -1245,20 +1499,188 @@ async def ws_chat(websocket: WebSocket, cid: str, token: str = ""):
             except Exception:
                 continue
             if data.get("type") == "typing":
+                current = await authenticated_user(decode_token(token), allow_mobile=False)
+                current_chat = await db.chats.find_one({"_id": ObjectId(cid)})
+                if current.get("account_deletion_pending") or not current_chat or not can_access_chat(current_chat, current):
+                    await websocket.close(code=1008)
+                    break
                 await hub.broadcast(cid, {"type": "typing", "user_id": sender_id, "name": sender_name}, exclude=websocket)
     except WebSocketDisconnect:
-        hub.disconnect(cid, websocket)
+        pass
     except Exception:
+        await websocket.close(code=1008)
+    finally:
         hub.disconnect(cid, websocket)
 
 
 @api.post("/chats/{cid}/read")
 async def mark_read(cid: str, user: dict = Depends(get_current_user)):
+    chat = await db.chats.find_one({"_id": ObjectId(cid)}) if ObjectId.is_valid(cid) else None
+    if not chat or not can_access_chat(chat, user):
+        raise HTTPException(403, "Not allowed")
     uid = str(user["_id"])
+    visible = visible_from("sender_id", user)
     await db.messages.update_many(
-        {"chat_id": cid, "sender_id": {"$ne": uid}, "read_by": {"$ne": uid}},
-        {"$push": {"read_by": uid}},
+        {"chat_id": cid, **visible, "sender_id": {**visible["sender_id"], "$ne": uid}, "read_by": {"$ne": uid}},
+        {"$addToSet": {"read_by": uid}},
     )
+    return {"ok": True}
+
+
+# ================================================================ CONTENT SAFETY
+@api.get("/me/blocked-members")
+async def blocked_members(user: dict = Depends(get_current_user)):
+    ids = [ObjectId(uid) for uid in user.get("blocked_user_ids", []) if ObjectId.is_valid(uid)]
+    members = await db.users.find({"_id": {"$in": ids}}, {"name": 1}).to_list(None)
+    return [{"id": str(member["_id"]), "name": member.get("name")} for member in members]
+
+
+@api.put("/me/blocked-members/{uid}")
+async def block_member(uid: str, user: dict = Depends(get_current_user)):
+    if not ObjectId.is_valid(uid) or not await db.users.find_one({"_id": ObjectId(uid)}, {"_id": 1}):
+        raise HTTPException(404, "Team member not found")
+    if uid == str(user["_id"]):
+        raise HTTPException(400, "You cannot block your own account")
+    await db.users.update_one({"_id": user["_id"]}, {"$addToSet": {"blocked_user_ids": uid}})
+    return {"ok": True}
+
+
+@api.delete("/me/blocked-members/{uid}")
+async def unblock_member(uid: str, user: dict = Depends(get_current_user)):
+    await db.users.update_one({"_id": user["_id"]}, {"$pull": {"blocked_user_ids": uid}})
+    return {"ok": True}
+
+
+async def report_target(kind, target_id, user):
+    collection, owner_field, _ = REPORT_TARGETS[kind]
+    query = {"_id": ObjectId(target_id), **(visible_from(owner_field, user) if owner_field else {})}
+    target = await db[collection].find_one(query, {"content": 0, "text": 0})
+    if target is None:
+        return None
+    if kind == "message":
+        chat = await db.chats.find_one({"_id": ObjectId(target["chat_id"])})
+        if not chat or not can_access_chat(chat, user):
+            return None
+    elif kind == "chat" and not can_access_chat(target, user):
+        return None
+    elif kind == "comment":
+        post = await db.posts.find_one({"_id": ObjectId(target["post_id"]), **visible_from("author_id", user)})
+        if not post:
+            return None
+    return target
+
+
+def report_attachment_id(kind, target):
+    if not target:
+        return None
+    return target.get("file_id") if kind == "schedule" else target.get("image_id")
+
+
+@api.post("/reports", status_code=201)
+async def submit_report(body: ContentReport, user: dict = Depends(get_current_user)):
+    if not ObjectId.is_valid(body.target_id):
+        raise HTTPException(404, "Report target not found")
+    target = await report_target(body.kind, body.target_id, user)
+    if target is None:
+        raise HTTPException(404, "Report target not found")
+    target_id = str(target["_id"])
+    reporter_id = str(user["_id"])
+    _, owner_field, _ = REPORT_TARGETS[body.kind]
+    subject_user_id = target.get(owner_field) if owner_field else target_id
+    # One report per reporter and target, including network retries.
+    report_key = f"{reporter_id}:{body.kind}:{target_id}"
+    try:
+        await db.content_reports.update_one({"_id": report_key}, {"$setOnInsert": {
+            "reporter_id": reporter_id, "kind": body.kind, "target_id": target_id, "reason": body.reason,
+            "subject_user_id": subject_user_id, "status": "pending", "created_at": now_iso(),
+        }}, upsert=True)
+    except DuplicateKeyError:
+        pass
+    return {"ok": True}
+
+
+@api.get("/moderation/reports")
+async def moderation_reports(user: dict = Depends(require("manage_roles"))):
+    reports = await db.content_reports.find({"status": "pending"}).sort("created_at", 1).to_list(100)
+    results = []
+    for report in reports:
+        collection, _, fields = REPORT_TARGETS[report["kind"]]
+        target = await db[collection].find_one(
+            {"_id": ObjectId(report["target_id"])}, {field: 1 for field in (*fields, "file_id", "image_id")},
+        )
+        summary = " · ".join(str(target[field]) for field in fields if target and target.get(field))
+        subject_id = report.get("subject_user_id")
+        subject = None
+        if ObjectId.is_valid(subject_id):
+            subject = await db.users.find_one({"_id": ObjectId(subject_id)}, {"name": 1, "role": 1, "suspended": 1})
+        results.append({
+            "id": report["_id"], "kind": report["kind"], "reason": report["reason"],
+            "created_at": report["created_at"], "summary": summary[:800],
+            "subject_name": subject.get("name") if subject else None,
+            "can_suspend": bool(subject and subject.get("role") != "admin" and not subject.get("suspended")),
+            "can_remove": target is not None and report["kind"] != "member",
+            "attachment_available": ObjectId.is_valid(report_attachment_id(report["kind"], target)),
+        })
+    return results
+
+
+@api.get("/moderation/reports/{report_id}/attachment")
+async def moderation_attachment(report_id: str, user: dict = Depends(require("manage_roles"))):
+    report = await db.content_reports.find_one({"_id": report_id, "status": "pending"})
+    if report:
+        collection, _, _ = REPORT_TARGETS[report["kind"]]
+        target = await db[collection].find_one({"_id": ObjectId(report["target_id"])}, {"file_id": 1, "image_id": 1})
+        attachment_id = report_attachment_id(report["kind"], target)
+        if ObjectId.is_valid(attachment_id):
+            file = await db.files.find_one({"_id": ObjectId(attachment_id)})
+            if file:
+                return file_response(file)
+    raise HTTPException(404, "Attachment not found")
+
+
+@api.post("/moderation/reports/{report_id}")
+async def resolve_report(report_id: str, body: ReviewReport, user: dict = Depends(require("manage_roles"))):
+    report = await db.content_reports.find_one({"_id": report_id})
+    if not report:
+        raise HTTPException(404, "Report not found")
+    if report["status"] != "pending":
+        return {"ok": True}
+    if body.action == "remove":
+        if report["kind"] == "member":
+            raise HTTPException(400, "Choose a content report to remove content")
+        collection, _, _ = REPORT_TARGETS[report["kind"]]
+        await db[collection].update_one(
+            {"_id": ObjectId(report["target_id"])}, {"$set": {"moderation_hidden": True}},
+        )
+    elif body.action == "suspend":
+        subject_id = report.get("subject_user_id")
+        if not ObjectId.is_valid(subject_id):
+            raise HTTPException(400, "No author account is available")
+        result = await db.users.update_one(
+            {"_id": ObjectId(subject_id), "role": {"$ne": "admin"}},
+            {"$set": {"suspended": True}, "$inc": {"mobile_session_version": 1}},
+        )
+        if result.matched_count != 1:
+            raise HTTPException(400, "This account must be managed outside the moderation queue")
+        await db.mobile_sessions.delete_many({"user_id": ObjectId(subject_id)})
+    await db.content_reports.update_one(
+        {"_id": report_id, "status": "pending"},
+        {"$set": {"status": body.action, "reviewer_id": str(user["_id"]), "resolved_at": now_iso()}},
+    )
+    return {"ok": True}
+
+
+@api.get("/moderation/suspended")
+async def suspended_accounts(user: dict = Depends(require("manage_roles"))):
+    members = await db.users.find({"suspended": True}, {"name": 1}).to_list(100)
+    return [{"id": str(member["_id"]), "name": member.get("name")} for member in members]
+
+
+@api.delete("/moderation/suspended/{uid}")
+async def restore_account(uid: str, user: dict = Depends(require("manage_roles"))):
+    if not ObjectId.is_valid(uid):
+        raise HTTPException(404, "Account not found")
+    await db.users.update_one({"_id": ObjectId(uid)}, {"$unset": {"suspended": ""}})
     return {"ok": True}
 
 
@@ -1338,6 +1760,8 @@ async def list_kudos(user: dict = Depends(get_current_user)):
 
 @api.post("/kudos")
 async def give_kudos(body: KudosBody, user: dict = Depends(get_current_user)):
+    require_community_terms(user)
+    filter_text(body.message)
     if body.to_id == str(user["_id"]):
         raise HTTPException(status_code=400, detail="You can't give kudos to yourself")
     target = await db.users.find_one({"_id": ObjectId(body.to_id)})
@@ -1402,8 +1826,8 @@ async def list_invites(user: dict = Depends(require("invite"))):
 async def create_invite(body: InviteBody, user: dict = Depends(require("invite"))):
     if body.access not in ROLES:
         raise HTTPException(status_code=400, detail="Invalid access role")
-    if body.access == "admin" and user.get("role") != "admin":
-        raise HTTPException(status_code=403, detail="Only admins can invite admins")
+    if body.access != "staff" and user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Only admins can invite managers or admins")
     campus = body.campus.strip() if body.campus else None
     location_id = None
     if body.location_id:
@@ -1421,7 +1845,7 @@ async def create_invite(body: InviteBody, user: dict = Depends(require("invite")
         campus = location["name"]
         location_id = str(location["_id"])
     doc = {
-        "code": gen_code(6),
+        "code": gen_code(10),
         "channel": body.channel,
         "value": body.value,
         "campus": campus,
@@ -1573,7 +1997,7 @@ FRONTEND_BUILD_DIR = Path(
 
 
 class ImmutableStaticFiles(StaticFiles):
-    """CRA asset filenames are content-hashed, so they can be cached forever."""
+    """Serve content-hashed build assets with long-lived caching."""
 
     async def get_response(self, path: str, scope):
         response = await super().get_response(path, scope)
@@ -1623,6 +2047,10 @@ async def startup():
         # Expire stale lockout counters automatically (1 day after the last
         # failed attempt) instead of keeping them forever.
         await db.login_attempts.create_index("updated_at", expireAfterSeconds=86400)
+        await db.mobile_sessions.create_index("refresh_digest", unique=True)
+        await db.mobile_sessions.create_index("expires_at", expireAfterSeconds=0)
+        await db.mobile_sessions.create_index("user_id")
+        await db.content_reports.create_index([("status", 1), ("created_at", 1)])
     except Exception as e:
         logger.warning(f"index setup: {e}")
 

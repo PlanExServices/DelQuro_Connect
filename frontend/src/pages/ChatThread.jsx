@@ -2,11 +2,12 @@ import { useEffect, useState, useCallback, useRef } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import { ArrowLeft, Send, Camera, Image as ImageIcon, X } from "lucide-react";
-import { api, apiError, fileUrl, wsUrl } from "@/lib/api";
+import { api, apiError, getToken, wsUrl } from "@/lib/api";
 import { relativeTime } from "@/lib/format";
 import { useAuth } from "@/context/AuthContext";
 import { Avatar } from "@/components/Avatar";
 import { ImageViewer } from "@/components/ImageViewer";
+import { PrivateImage } from "@/components/PrivateImage";
 import { inputCls, inputStyle } from "@/components/kit";
 import { Loading, ErrorState } from "@/components/States";
 
@@ -56,7 +57,9 @@ export default function ChatThread() {
   useEffect(() => {
     let ws;
     try {
-      ws = new WebSocket(wsUrl(`/ws/chat/${id}`));
+      const token = getToken();
+      if (!token) return;
+      ws = new WebSocket(wsUrl(`/ws/chat/${id}`), ["connect-chat", `auth.${token}`]);
       wsRef.current = ws;
       ws.onmessage = (ev) => {
         try {
@@ -140,7 +143,7 @@ export default function ChatThread() {
               <div className={`max-w-[75%] ${mine ? "items-end" : "items-start"} flex flex-col`}>
                 {!mine && <span className="text-xs font-semibold mb-1 ml-1" style={{ color: "var(--teal-dark)" }}>{m.sender_name}</span>}
                 {m.image_id ? (
-                  <img src={fileUrl(m.image_id)} alt="attachment" onClick={() => setViewer(fileUrl(m.image_id))}
+                  <PrivateImage fileId={m.image_id} alt="Chat attachment" onPreview={setViewer}
                     className="rounded-2xl max-w-full max-h-64 object-cover cursor-zoom-in" />
                 ) : (
                   <div className="px-4 py-2.5 rounded-2xl text-[15px]" style={{ background: mine ? "var(--brand)" : "var(--card)", color: mine ? "#fff" : "var(--on-surface)", borderBottomRightRadius: mine ? 6 : 18, borderBottomLeftRadius: mine ? 18 : 6 }}>

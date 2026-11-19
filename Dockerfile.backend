@@ -21,8 +21,11 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY backend/requirements.txt ./
+# Build backends are isolated by pip. The running app needs neither package.
 RUN pip install --no-cache-dir --upgrade pip \
-    && pip install --no-cache-dir -r requirements.txt
+    && pip install --no-cache-dir -r requirements.txt \
+    && pip uninstall -y setuptools wheel \
+    && pip check
 
 COPY backend/ ./
 
