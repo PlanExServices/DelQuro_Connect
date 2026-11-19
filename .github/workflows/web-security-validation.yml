@@ -1,0 +1,78 @@
+name: Web and image security validation
+
+on:
+  pull_request:
+    paths:
+      - 'frontend/**'
+      - 'backend/**'
+      - 'Dockerfile'
+      - 'Dockerfile.backend'
+      - '.github/workflows/web-security-validation.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: web-security-validation-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Build and audit the web dependency tree
+        run: |
+          docker build --target frontend-build --tag connect-frontend-ci .
+          docker run --rm connect-frontend-ci npm audit --audit-level=high
+
+      - name: Verify build tools are absent from both Python runtime images
+        run: |
+          docker build --tag connect-web-ci .
+          docker build -f Dockerfile.backend --tag connect-api-ci .
+          for image in connect-web-ci connect-api-ci; do
+            docker run --rm -i --entrypoint python "$image" - <<'PY'
+          import importlib.metadata
+          import site
+          from pathlib import Path
+
+          tools = {"setuptools", "wheel", "jaraco.context"}
+          present = tools.intersection(
+              dist.metadata["Name"].lower() for dist in importlib.metadata.distributions()
+          )
+          vendored = {
+              path.name
+              for root in site.getsitepackages()
+              for pattern in ("jaraco.context-*.dist-info", "wheel-*.dist-info")
+              for path in Path(root).rglob(pattern)
+          }
+          if present or vendored:
+              raise SystemExit(f"Unexpected build tools in runtime image: {sorted(present | vendored)}")
+          print("No setuptools, wheel or jaraco.context package metadata in the runtime image")
+          PY
+          done
+
+      - name: Verify the same-origin web app with a disposable database
+        run: |
+          docker network create connect-ci
+          docker run -d --network connect-ci --name connect-mongo mongo:7
+          docker run -d --network connect-ci --name connect-web -p 127.0.0.1:8000:8000 \
+            -e MONGO_URL=mongodb://connect-mongo:27017 -e DB_NAME=connect_ci \
+            -e JWT_SECRET="$(openssl rand -hex 32)" connect-web-ci
+          curl --fail --silent --show-error --retry 20 --retry-all-errors --retry-delay 2 \
+            http://127.0.0.1:8000/health/ready | jq -e '.database == "ok"'
+          curl --fail --silent --show-error http://127.0.0.1:8000/privacy | grep -q '<div id="root">'
+          curl --fail --silent --show-error http://127.0.0.1:8000/api/health | jq -e '.status == "ok"'
+          test "$(curl --silent -o /dev/null -w '%{http_code}' http://127.0.0.1:8000/api/auth/me)" = 401
+
+      - name: Verify the split web image can serve the same frontend
+        run: |
+          docker build --tag connect-split-web-ci ./frontend
+          docker run --rm connect-split-web-ci nginx -t
+          docker run -d --name connect-split-web -p 127.0.0.1:8080:80 connect-split-web-ci
+          curl --fail --silent --show-error --retry 5 --retry-all-errors --retry-delay 1 \
+            http://127.0.0.1:8080/privacy | grep -q '<div id="root">'

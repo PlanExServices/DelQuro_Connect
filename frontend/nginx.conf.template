@@ -8,7 +8,7 @@ server {
     root /usr/share/nginx/html;
     index index.html;
 
-    # Hashed CRA assets can be cached aggressively.
+    # Content-hashed build assets can be cached aggressively.
     location /static/ {
         expires 1y;
         add_header Cache-Control "public, max-age=31536000, immutable";

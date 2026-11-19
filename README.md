@@ -129,11 +129,11 @@ IN_MEMORY_DB=1 SEED_DEMO=1 python backend/dev_server.py
 Health checks: `GET /health` (liveness, also `/api/health`) and
 `GET /health/ready` (also pings MongoDB, returns 503 when it is unreachable).
 
-### 2. Frontend (React + CRACO)
+### 2. Frontend (React + Vite)
 
 ```bash
 cd frontend
-npm install
+npm ci
 cp .env.example .env        # optional — see below
 npm start                   # http://localhost:3000
 ```

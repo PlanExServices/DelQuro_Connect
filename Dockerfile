@@ -20,15 +20,12 @@ WORKDIR /frontend
 
 # Install dependencies from the lockfile first so this layer is cached.
 COPY frontend/package.json frontend/package-lock.json ./
-RUN npm ci --include=dev --legacy-peer-deps --no-audit --no-fund
+RUN npm ci --include=dev --no-audit --no-fund
 
 COPY frontend/ ./
 
 # REACT_APP_BACKEND_URL is deliberately left empty: the app then calls the
 # relative "/api" path, which this same container serves.
-ENV CI=false \
-    GENERATE_SOURCEMAP=false \
-    DISABLE_ESLINT_PLUGIN=true
 RUN npm run build
 
 # ---------- stage 2: backend runtime + static frontend ----------
@@ -42,8 +39,11 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY backend/requirements.txt ./
+# Build backends are isolated by pip. The running app needs neither package.
 RUN pip install --no-cache-dir --upgrade pip \
-    && pip install --no-cache-dir -r requirements.txt
+    && pip install --no-cache-dir -r requirements.txt \
+    && pip uninstall -y setuptools wheel \
+    && pip check
 
 COPY backend/ ./
 COPY --from=frontend-build /frontend/build ./frontend_build

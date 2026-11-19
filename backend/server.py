@@ -1997,7 +1997,7 @@ FRONTEND_BUILD_DIR = Path(
 
 
 class ImmutableStaticFiles(StaticFiles):
-    """CRA asset filenames are content-hashed, so they can be cached forever."""
+    """Serve content-hashed build assets with long-lived caching."""
 
     async def get_response(self, path: str, scope):
         response = await super().get_response(path, scope)

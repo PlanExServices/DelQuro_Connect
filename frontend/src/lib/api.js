@@ -1,10 +1,8 @@
 import axios from "axios";
 
-// Absolute backend URL when configured; otherwise fall back to the relative
-// "/api" path (same-origin deployments, and the dev server proxies it to the
-// local backend — see craco.config.js). Without this fallback a missing env
-// var silently produced calls to "undefined/api".
-const BACKEND_URL = (process.env.REACT_APP_BACKEND_URL || "").replace(/\/+$/, "");
+// Use the configured public API origin for split deployments. The development
+// server proxies relative /api requests to the local backend.
+const BACKEND_URL = (import.meta.env.REACT_APP_BACKEND_URL || "").replace(/\/+$/, "");
 export const API = `${BACKEND_URL}/api`;
 
 const TOKEN_KEY = "delquro_token";
